@@ -114,7 +114,9 @@ pre-install-tekton    -- runs before Tekton install
 post-configure-pac    -- runs after PAC configuration
 ```
 
-Available hook points: `all`, `sync-kubeconfig`, `install-nginx`, `install-registry`, `install-tekton`, `install-triggers`, `install-chains`, `install-dashboard`, `install-pac`, `configure-pac`, `configure-pac-custom-certs`, `patch-pac-service-nodeport`, `install-forgejo`, `install-postgresql`, `install-custom-objects`, `install-github-second-ctrl`.
+Available hook points: `all`, `sync-kubeconfig`, `install-nginx`, `install-registry`, `install-tekton`, `install-triggers`, `install-chains`, `install-dashboard`, `install-pac`, `configure-pac`, `configure-pac-custom-certs`, `patch-pac-service-nodeport`, `install-forgejo`, `setup-forgejo-sample`, `install-postgresql`, `install-custom-objects`, `install-github-second-ctrl`.
+
+Hooks run in the full install flows and in matching direct component commands such as `--install-tekton`, `--install-paac`, `--install-forgejo`, and `--configure-pac`.
 
 ### Format
 
@@ -127,7 +129,7 @@ A hook can be a single executable file or a directory of executables (run in sor
 
 ### Environment
 
-All existing env vars are inherited (`KUBECONFIG`, `TARGET_HOST`, `PAC_DIR`, etc.). `STARTPAC_HOOK_NAME` is exported with the current hook name.
+Hooks inherit the current environment. startpaac also exports its scalar runtime/config values for hooks (`KUBECONFIG`, `TARGET_HOST`, `PAC_DIR`, etc.). `STARTPAC_HOOK_NAME` is exported with the current hook name; `STARTPAAC_HOOK_NAME` is also available as an alias.
 
 A non-zero exit from any hook aborts the run.
 

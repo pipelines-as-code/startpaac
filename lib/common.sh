@@ -370,6 +370,58 @@ EOF
 
 HOOKS_DIR="${HOOKS_DIR:-${HOME}/.config/startpaac/hooks}"
 
+export_hook_environment() {
+    local -a hook_env_vars=(
+        CERT_DIR
+        CI_MODE
+        CONFIG_FILE
+        DASHBOARD
+        DOMAIN_NAME
+        FORCE_INTERACTIVE
+        FORGE_HOST
+        HOOKS_DIR
+        INSTALL_CUSTOM_OBJECT
+        INSTALL_CUSTOM_OBJECT_ENABLED
+        INSTALL_FORGE
+        INSTALL_GITHUB_SECOND_CTRL
+        INSTALL_PAC
+        INSTALL_POSTGRESQL
+        INSTALL_TEKTON_CHAINS
+        INSTALL_TEKTON_DASHBOARD
+        INSTALL_TEKTON_TRIGGERS
+        KO_DEFAULTBASEIMAGE
+        KUBECONFIG
+        PAC
+        PAC_CONTROLLER_TARGET_NS
+        PAC_DEBUG_IMAGE
+        PAC_DIR
+        PAC_DOMAIN
+        PAC_IMAGE_NONROOT
+        PAC_PASS_SECOND_FOLDER
+        PAC_PASS_SECRET_FOLDER
+        PAC_SECOND_SECRET_FOLDER
+        PAC_SECRET_FOLDER
+        PAC_WEBHOOK_NODEPORT
+        PAC_WEBHOOK_SECRET
+        PAC_WEB_URL
+        PREFERENCES_FILE
+        REGISTRY
+        SP
+        TARGET_BIND_IP
+        TARGET_HOST
+        TMPFILE
+        USE_NODEPORT_WEBHOOK
+    )
+    local var declaration
+
+    for var in "${hook_env_vars[@]}"; do
+        [[ -v ${var} ]] || continue
+        declaration=$(declare -p "${var}" 2>/dev/null || true)
+        [[ ${declaration} == declare\ -a* || ${declaration} == declare\ -A* ]] && continue
+        export "${var?}"
+    done
+}
+
 run_hook() {
     local hook_name="$1"
     local hook_path="${HOOKS_DIR}/${hook_name}"
@@ -387,7 +439,9 @@ run_hook() {
 
     [[ ${#hook_files[@]} -eq 0 ]] && return 0
 
+    export_hook_environment
     export STARTPAC_HOOK_NAME="${hook_name}"
+    export STARTPAAC_HOOK_NAME="${hook_name}"
     for hook_file in "${hook_files[@]}"; do
         local display_name="${hook_name}"
         [[ ${#hook_files[@]} -gt 1 ]] && display_name="${hook_name}/$(basename "${hook_file}")"

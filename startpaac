@@ -987,23 +987,23 @@ function parse_args() {
       shift
       ;;
     -g | --install-forgejo) # Install Forgejo
-      install_forgejo ${FORGE_HOST}
-      setup_forgejo_sample
+      run_with_hooks install-forgejo install_forgejo ${FORGE_HOST}
+      run_with_hooks setup-forgejo-sample setup_forgejo_sample
       exit
       ;;
     -s | --sync-kubeconfig) # Sync kubeconfig
-      sync_kubeconfig
+      run_with_hooks sync-kubeconfig sync_kubeconfig
       exit
       ;;
     -S | --github-second-ctrl) # Deploy second controller for github
-      install_github_second_ctrl
+      run_with_hooks install-github-second-ctrl install_github_second_ctrl
       exit
       ;;
     -H | --all-github-second-no-forgejo) # Install everything but forgejo
       INSTALL_FORGE=false
       install_kind
       all
-      install_github_second_ctrl
+      run_with_hooks install-github-second-ctrl install_github_second_ctrl
       show_config
       exit
       ;;
@@ -1017,7 +1017,7 @@ function parse_args() {
       exit
       ;;
     -t | --install-tekton) # Install Tekton
-      install_tekton
+      run_with_hooks install-tekton install_tekton
       exit
       ;;
     -a | --all) # Install everything
@@ -1031,20 +1031,20 @@ function parse_args() {
       exit
       ;;
     -c | --deploy-component) # Install a specific component
-      install_pac "$2"
+      run_with_hooks install-pac install_pac "$2"
       shift
       exit
       ;;
     -p | --install-paac) # Deploy and configure PAC
-      install_pac
-      configure_pac
-      configure_pac_custom_certs
-      patch_pac_service_nodeport
+      run_with_hooks install-pac install_pac
+      run_with_hooks configure-pac configure_pac
+      run_with_hooks configure-pac-custom-certs configure_pac_custom_certs
+      run_with_hooks patch-pac-service-nodeport patch_pac_service_nodeport
       exit
       ;;
     -k | --kind) # Install Kind
       install_kind
-      sync_kubeconfig
+      run_with_hooks sync-kubeconfig sync_kubeconfig
       exit
       ;;
     -i | --menu | --interactive) # Force interactive component selection menu
@@ -1059,14 +1059,14 @@ function parse_args() {
       exit 0
       ;;
     --setup-forgejo-sample) # Setup sample Forgejo user and repo
-      setup_forgejo_sample
+      run_with_hooks setup-forgejo-sample setup_forgejo_sample
       exit
       ;;
     --debug-image) # use a debug image to apply KO images
       show_step "Using debug image:  ${PAC_DEBUG_IMAGE}"
       export KO_DEFAULTBASEIMAGE=${PAC_DEBUG_IMAGE}
       PAC_IMAGE_NONROOT=false
-      install_pac
+      run_with_hooks install-pac install_pac
       echo
       echo "You can oc rsh to controller (or watcher, webhook) with:"
       echo "kubectl exec -it deployment/pipelines-as-code-controller -- bash"
@@ -1075,7 +1075,7 @@ function parse_args() {
     --second-secret) # Set the secret for the second controller
       PAC_PASS_SECOND_FOLDER=$2
       shift
-      install_github_second_ctrl
+      run_with_hooks install-github-second-ctrl install_github_second_ctrl
       exit
       ;;
     --show-config) # Show configuration
@@ -1083,40 +1083,40 @@ function parse_args() {
       exit
       ;;
     --install-registry) # Install docker registry
-      install_registry
+      run_with_hooks install-registry install_registry
       exit
       ;;
     --install-postgresql) # Install PostgreSQL
-      install_postgresql
+      run_with_hooks install-postgresql install_postgresql
       exit
       ;;
     --install-dashboard) # Install Tekton dashboard
-      install_dashboard
+      run_with_hooks install-dashboard install_dashboard
       exit
       ;;
     --install-triggers) # Install Tekton triggers
-      install_triggers
+      run_with_hooks install-triggers install_triggers
       exit
       ;;
     --install-chains) # Install Tekton chains
-      install_chains
+      run_with_hooks install-chains install_chains
       exit
       ;;
     --install-nginx) # Install Nginx
-      install_nginx
+      run_with_hooks install-nginx install_nginx
       exit
       ;;
     --all-to-tekton) # Install everything up to Tekton
       install_kind
-      sync_kubeconfig
-      install_nginx
-      install_registry
-      install_tekton
+      run_with_hooks sync-kubeconfig sync_kubeconfig
+      run_with_hooks install-nginx install_nginx
+      run_with_hooks install-registry install_registry
+      run_with_hooks install-tekton install_tekton
       show_config
       exit
       ;;
     --configure-pac) # Configure PAC
-      configure_pac
+      run_with_hooks configure-pac configure_pac
       exit
       ;;
     --configure-pac-target) # Configure PAC to a target, this won't configure a ingress
@@ -1133,12 +1133,12 @@ function parse_args() {
         echo "Cannot find $5 folder or ~/.password-store/$5 folder"
         exit 1
       fi
-      configure_pac --no-ingress
+      run_with_hooks configure-pac configure_pac --no-ingress
       if [[ "${USE_NODEPORT_WEBHOOK}" != "true" ]]; then
         show_step "Creating gosmee service in namespace gosmee"
         makeGosmee gosmee ${smee_url} http://pipelines-as-code-controller.$PAC_CONTROLLER_TARGET_NS.svc.cluster.local:8080 gosmee
       else
-        patch_pac_service_nodeport
+        run_with_hooks patch-pac-service-nodeport patch_pac_service_nodeport
         echo "NodePort webhook enabled, skipping gosmee deployment"
       fi
       exit
@@ -1150,7 +1150,7 @@ function parse_args() {
     --redeploy-kind) # Redeploy Kind
       stop_kind
       install_kind
-      sync_kubeconfig
+      run_with_hooks sync-kubeconfig sync_kubeconfig
       exit
       ;;
     --ci) # Non-interactive CI mode (skips gum, uses TLS with minica)
