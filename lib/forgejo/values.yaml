@@ -22,10 +22,9 @@ service:
     nodePort: 32567
 
 ingress:
-  enabled: true
-  className: "nginx"
-  # Host is set via --set ingress.hosts[0].host=...
-  # TLS is always enabled via --set flags
+  enabled: false
+  # Routing is handled by an HTTPRoute (create_httproute) against the shared
+  # Envoy Gateway instead of a chart-managed Ingress.
 
 gitea:
   additionalConfigFromEnvs:
