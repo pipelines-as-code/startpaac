@@ -37,7 +37,7 @@ Run the interactive installer:
 ## What gets installed
 
 **Core** (always):
-Kind cluster, Nginx ingress, Docker registry, Tekton Pipelines
+Kind cluster, Envoy Gateway, Docker registry, Tekton Pipelines
 
 **Optional** (selected via menu):
 PAC (built from local source with ko), Tekton Dashboard, Tekton Triggers, Tekton Chains, Forgejo, PostgreSQL, GitHub second controller
@@ -74,7 +74,7 @@ Configure PAC on an existing cluster (e.g. OpenShift):
 | `-s, --sync-kubeconfig` | Sync kubeconfig from remote host |
 | `-G, --start-user-gosmee` | Start gosmee locally |
 | `-S, --github-second-ctrl` | Deploy second GitHub controller |
-| `--install-nginx` | Install Nginx |
+| `--install-gateway` | Install Envoy Gateway |
 | `--install-dashboard` | Install Tekton Dashboard |
 | `--install-tekton` | Install Tekton |
 | `--install-triggers` | Install Tekton Triggers |

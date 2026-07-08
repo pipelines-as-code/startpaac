@@ -20,7 +20,7 @@ StartPAC is a modular Bash-based orchestration tool that automates the creation 
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Component Installers                        │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
-│  │  Kind    │ │  Nginx   │ │ Registry │ │  Tekton  │          │
+│  │  Kind    │ │  Envoy   │ │ Registry │ │  Tekton  │          │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘          │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
 │  │   PAC    │ │ Forgejo  │ │PostgreSQL│ │Dashboard │          │
@@ -34,7 +34,7 @@ StartPAC is a modular Bash-based orchestration tool that automates the creation 
 │  │ Namespaces:                                             │   │
 │  │  • tekton-pipelines (Tekton core + Dashboard)           │   │
 │  │  • pipelines-as-code (PAC controllers)                  │   │
-│  │  • ingress-nginx (Ingress controller)                   │   │
+│  │  • envoy-gateway-system (Gateway API impl.)              │   │
 │  │  • default (Forgejo, PostgreSQL)                        │   │
 │  │  • gosmee (Webhook proxy)                               │   │
 │  └─────────────────────────────────────────────────────────┘   │
@@ -55,16 +55,16 @@ StartPAC is a modular Bash-based orchestration tool that automates the creation 
 - **Configuration**: `lib/kind/kind.yaml`
 - **Features**:
   - Insecure registry support
-  - Port forwarding for ingress (80, 443)
+  - Port forwarding for Envoy Gateway NodePorts (80->31080, 443->31443)
   - Custom containerd registry configuration
 
-#### 2. Nginx Ingress
-- **Purpose**: HTTP(S) routing to services
-- **Namespace**: `ingress-nginx`
+#### 2. Envoy Gateway
+- **Purpose**: HTTP(S) routing to services via the Kubernetes Gateway API
+- **Namespace**: `envoy-gateway-system`
 - **Features**:
-  - TLS termination with self-signed certificates (minica)
-  - Default ingress class
-  - Routes traffic to PAC, Forgejo, Dashboard
+  - TLS termination with a wildcard self-signed certificate (minica)
+  - Single shared `Gateway`; per-component `HTTPRoute` resources use its HTTPS listener
+  - Routes traffic to PAC, Forgejo, Dashboard, Registry
 
 #### 3. Docker Registry
 - **Purpose**: Store locally built container images
@@ -181,7 +181,7 @@ startpaac/
 3. Infrastructure Setup
    │
    ├─→ Create Kind cluster
-   ├─→ Install Nginx Ingress
+   ├─→ Install Envoy Gateway
    ├─→ Install Docker Registry
    ├─→ Install Tekton Pipelines
    │
@@ -189,7 +189,7 @@ startpaac/
    │
    ├─→ Install Tekton Dashboard, Triggers, Chains
    ├─→ Build and deploy PAC using ko
-   ├─→ Configure PAC (secrets, ingress, configmaps)
+   ├─→ Configure PAC (secrets, HTTPRoute, configmaps)
    ├─→ Install Forgejo, PostgreSQL
    ├─→ Install GitHub Second Controller
    │
@@ -212,7 +212,7 @@ Webhook URL (GitHub App)
 Gosmee Proxy (local or in-cluster)
    │
    ▼
-Nginx Ingress (https://paac.127.0.0.1.nip.io)
+Envoy Gateway (https://paac.127.0.0.1.nip.io)
    │
    ▼
 PAC Webhook Service (port 8080)

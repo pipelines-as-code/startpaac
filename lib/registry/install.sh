@@ -29,22 +29,30 @@ kubectl create namespace ${NS} 2>/dev/null || true
 [[ -z $(helm status -n ${NS} docker-registry 2>/dev/null) ]] &&
   helm install --wait --set garbageCollect.enabled=true docker-registry twuni/docker-registry --namespace ${NS}
 
-# Create ingress with TLS
-create_ingress ${NS} docker-registry ${REGISTRY} 5000
+# Create HTTPRoute
+create_httproute ${NS} docker-registry ${REGISTRY} 5000
 
-show_step "Add annotations to the ingress controller"
-for annotations in "nginx.ingress.kubernetes.io/proxy-body-size=0" \
-  "nginx.ingress.kubernetes.io/proxy-read-timeout=600" \
-  "nginx.ingress.kubernetes.io/proxy-send-timeout=600"; do
-  kubectl annotate ingress -n ${NS} docker-registry "${annotations}" --overwrite=true
-done
-
-kubectl annotate ingress -n ${NS} docker-registry "kubernetes.io/tls-acme=true" --overwrite=true
+show_step "Setting BackendTrafficPolicy for registry timeouts"
+kubectl apply -f - <<EOF
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: docker-registry
+  namespace: ${NS}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: docker-registry
+  timeout:
+    http:
+      requestTimeout: 600s
+EOF
 
 show_step "Copying self certs on the control plane"
+generate_certs_minica ${REGISTRY}
 prefix=()
 if [[ ${TARGET_HOST} != local ]]; then
-  generate_certs_minica ${REGISTRY}
   scp -qr ${CERT_DIR} ${TARGET_HOST}:/tmp/"$(basename "${CERT_DIR}")"
   prefix=(ssh -q "${TARGET_HOST}" -t)
   CERT_DIR=/tmp/"$(basename "${CERT_DIR}")"

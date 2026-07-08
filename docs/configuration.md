@@ -114,7 +114,7 @@ pre-install-tekton    -- runs before Tekton install
 post-configure-pac    -- runs after PAC configuration
 ```
 
-Available hook points: `all`, `sync-kubeconfig`, `install-nginx`, `install-registry`, `install-tekton`, `install-triggers`, `install-chains`, `install-dashboard`, `install-pac`, `configure-pac`, `configure-pac-custom-certs`, `patch-pac-service-nodeport`, `install-forgejo`, `setup-forgejo-sample`, `install-postgresql`, `install-custom-objects`, `install-github-second-ctrl`.
+Available hook points: `all`, `sync-kubeconfig`, `install-gateway`, `install-registry`, `install-tekton`, `install-triggers`, `install-chains`, `install-dashboard`, `install-pac`, `configure-pac`, `configure-pac-custom-certs`, `patch-pac-service-nodeport`, `install-forgejo`, `setup-forgejo-sample`, `install-postgresql`, `install-custom-objects`, `install-github-second-ctrl`.
 
 Hooks run in the full install flows and in matching direct component commands such as `--install-tekton`, `--install-paac`, `--install-forgejo`, and `--configure-pac`.
 

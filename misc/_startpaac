@@ -50,7 +50,7 @@ _arguments -C \
     '(-F --all-but-forge)'{-F,--all-but-forge}'[Install everything except Forgejo]' \
     '--stop-kind[Stop Kind cluster]' \
     '--redeploy-kind[Redeploy Kind cluster]' \
-    '--install-nginx[Install nginx ingress controller]' \
+    '--install-gateway[Install Envoy Gateway]' \
     '--install-postgresql[Install a postgresql database]' \
     '--all-to-tekton[Install everything up to Tekton]' \
     '--install-dashboard[Install Tekton dashboard]' \

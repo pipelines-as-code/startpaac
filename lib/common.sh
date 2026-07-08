@@ -89,44 +89,41 @@ create_tls_secret() {
   kubectl create secret tls ${sec_name} --key ${key_file} --cert ${cert_file} -n ${namespace}
 }
 
-create_ingress() {
+create_httproute() {
   local namespace=$1
   local component=$2
   local host=$3
   local targetPort=$4
-  local sec_name=${component}-tls
-  create_tls_secret "${host}" "${sec_name}" "${namespace}"
+  # TLS termination is handled at the Gateway level via its wildcard cert.
 
-  echo "Creating ingress on $(echo_color brightgreen "https://${host}") for ${component}:${targetPort} in ${namespace}"
+  echo "Creating HTTPRoute on $(echo_color brightgreen "https://${host}") for ${component}:${targetPort} in ${namespace}"
   kubectl apply -f - <<EOF
 ---
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
 metadata:
   name: "${component}"
   namespace: "${namespace}"
 spec:
-  ingressClassName: nginx
-  tls:
-    - hosts:
-        - "${host}"
-      secretName: "${sec_name}"
+  parentRefs:
+    - name: eg
+      namespace: envoy-gateway-system
+      sectionName: https
+  hostnames:
+    - "${host}"
   rules:
-    - host: "${host}"
-      http:
-        paths:
-          - pathType: ImplementationSpecific
-            backend:
-              service:
-                name: "${component}"
-                port:
-                  number: ${targetPort}
+    - backendRefs:
+        - name: "${component}"
+          port: ${targetPort}
 EOF
 }
 
 generate_certs_minica() {
   local domain="$1"
-  [[ -e ${CERT_DIR}/${domain}/cert.pem ]] && return 0
+  # minica replaces "*" with "_" in the output directory name it creates for a domain
+  # (e.g. "*.example.com" -> "_.example.com"), so check existence against that path.
+  local dir_name="${domain//\*/_}"
+  [[ -e ${CERT_DIR}/${dir_name}/cert.pem ]] && return 0
   mkdir -p ${CERT_DIR}
   if command -v pass >/dev/null 2>&1 && pass ls minica >/dev/null 2>&1; then
     pass show minica/cert >${CERT_DIR}/minica.pem
@@ -172,6 +169,11 @@ wait_for_resource() {
         desired=$(kubectl get deployment -n "${namespace}" "${name}" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
         ready=$(kubectl get deployment -n "${namespace}" "${name}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
         [[ -n ${desired} ]] && [[ -n ${ready} ]] && [[ ${desired} -eq ${ready} ]] && [[ ${ready} -gt 0 ]] && is_ready=1
+        ;;
+      gateway)
+        kubectl wait --for=condition=Accepted gateway/"${name}" -n "${namespace}" --timeout=0s &>/dev/null &&
+          kubectl wait --for=condition=Programmed gateway/"${name}" -n "${namespace}" --timeout=0s &>/dev/null &&
+          is_ready=1
         ;;
       *)
         echo_color brightred " ERROR: Unknown resource type ${resource_type}"

@@ -94,8 +94,8 @@ jobs:
           echo "=== Waiting for Tekton Pipelines ==="
           kubectl -n tekton-pipelines rollout status deployment --timeout=300s
 
-          echo "=== Waiting for nginx ingress ==="
-          kubectl -n ingress-nginx rollout status deployment --timeout=300s
+          echo "=== Waiting for Envoy Gateway ==="
+          kubectl -n envoy-gateway-system rollout status deployment/envoy-gateway --timeout=300s
 
           echo "=== Waiting for PAC deployments ==="
           for name in controller webhook watcher; do
@@ -116,7 +116,7 @@ jobs:
 
           echo "=== Verify core namespaces ==="
           kubectl get namespace tekton-pipelines
-          kubectl get namespace ingress-nginx
+          kubectl get namespace envoy-gateway-system
           kubectl get namespace pipelines-as-code
           kubectl get namespace forgejo
 
@@ -126,7 +126,9 @@ jobs:
 
           echo "=== Verify PAC pods running ==="
           kubectl get pods -n pipelines-as-code -o wide
-          kubectl wait --for=condition=Ready pods --all -n pipelines-as-code --timeout=60s
+          for name in controller webhook watcher; do
+            kubectl rollout status deployment/pipelines-as-code-$name -n pipelines-as-code --timeout=60s
+          done
 
           echo "=== Verify PAC controller endpoint exists ==="
           kubectl get ep -n pipelines-as-code pipelines-as-code-controller

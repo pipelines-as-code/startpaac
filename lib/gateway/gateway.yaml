@@ -1,0 +1,105 @@
+# Envoy Gateway resources for startpaac's Kind cluster.
+#
+# - EnvoyProxy: pins the Envoy data-plane Service to NodePort with fixed ports so they
+#   don't collide with the PAC webhook NodePort (30080). Kind's extraPortMappings map
+#   host 80/443 -> these NodePorts (see lib/kind/kind.yaml).
+# - GatewayClass: references the EnvoyProxy CR above via parametersRef.
+# - Gateway: the single shared Gateway all component HTTPRoutes use through the
+#   HTTPS listener. allowedRoutes is set to "All" namespaces since HTTPRoutes are
+#   created directly in their component's namespace (registry, forgejo,
+#   tekton-pipelines, pipelines-as-code, ...).
+#
+# The HTTPS listener's certificateRefs points at a wildcard cert Secret
+# (*.${PAC_DOMAIN}) created by install_gateway() in this same namespace, since Gateway
+# API requires TLS cert Secrets to live in the Gateway's own namespace.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: startpaac-envoy-proxy
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: NodePort
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+                - name: http-80
+                  port: 80
+                  nodePort: 31080
+                  protocol: TCP
+                  targetPort: 10080
+                - name: https-443
+                  port: 443
+                  nodePort: 31443
+                  protocol: TCP
+                  targetPort: 10443
+      envoyDeployment:
+        # Also bind the Envoy pod directly to the node's real ports 80/443 via
+        # hostPort (mirroring how the old kind-provider ingress-nginx manifest
+        # worked). This is required so that processes running *inside* the Kind
+        # node itself (e.g. containerd pulling images from the in-cluster
+        # registry over registry.${PAC_DOMAIN}, which resolves to 127.0.0.1) can
+        # reach the Gateway on 127.0.0.1:443. A NodePort Service alone is only
+        # reachable at 127.0.0.1:<nodePort>, not at 127.0.0.1:443, and Docker's
+        # extraPortMappings (host -> node) don't help traffic that never leaves
+        # the node.
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: envoy
+                      ports:
+                        - name: host-http
+                          containerPort: 10080
+                          hostPort: 80
+                          protocol: TCP
+                        - name: host-https
+                          containerPort: 10443
+                          hostPort: 443
+                          protocol: TCP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: startpaac-envoy-proxy
+    namespace: envoy-gateway-system
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg
+  namespace: envoy-gateway-system
+spec:
+  gatewayClassName: eg
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: startpaac-wildcard-tls
+      allowedRoutes:
+        namespaces:
+          from: All

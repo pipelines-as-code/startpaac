@@ -175,11 +175,11 @@ install_kind() {
     extra_mappings=$(mktemp)
     for ip in "${BIND_IPS[@]:1}"; do
       cat >>"${extra_mappings}" <<EOF
-      - containerPort: 80
+      - containerPort: 31080
         hostPort: 80
         listenAddress: "${ip}"
         protocol: TCP
-      - containerPort: 443
+      - containerPort: 31443
         hostPort: 443
         listenAddress: "${ip}"
         protocol: TCP
@@ -226,13 +226,28 @@ EOF
   esac
 }
 
-install_nginx() {
-  local release_yaml
-  show_step "Installing nginx ingress"
-  release_yaml=$(cache_yaml_file nginx https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml)
-  kubectl apply -f "${release_yaml}" >/dev/null
-  kubectl -n ingress-nginx annotate ingressclasses nginx ingressclass.kubernetes.io/is-default-class="true" --overwrite=true
-  wait_for_resource endpoint ingress-nginx ingress-nginx-controller
+install_gateway() {
+  local envoy_gateway_version="v1.8.2"
+  show_step "Installing Envoy Gateway"
+  helm upgrade --install --wait \
+    --version "${envoy_gateway_version}" \
+    --namespace envoy-gateway-system --create-namespace \
+    envoy-gateway oci://docker.io/envoyproxy/gateway-helm >/dev/null
+  wait_for_resource deployment envoy-gateway-system envoy-gateway
+
+  show_step "Creating wildcard TLS cert for *.${PAC_DOMAIN}"
+  local wildcard_cert_dir="_.${PAC_DOMAIN}" # minica turns "*" into "_" for the output dir
+  generate_certs_minica "*.${PAC_DOMAIN}"
+  kubectl create namespace envoy-gateway-system 2>/dev/null || true
+  kubectl create secret tls startpaac-wildcard-tls \
+    --key "${CERT_DIR}/${wildcard_cert_dir}/key.pem" \
+    --cert "${CERT_DIR}/${wildcard_cert_dir}/cert.pem" \
+    -n envoy-gateway-system \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+  show_step "Applying Gateway API resources"
+  kubectl apply -f "${SP}/lib/gateway/gateway.yaml" >/dev/null
+  wait_for_resource gateway envoy-gateway-system eg
 }
 
 install_registry() {
@@ -284,7 +299,7 @@ install_dashboard() {
   show_step "Deploying Tekton Dashboard"
   release_yaml=$(cache_yaml_file dashboard https://storage.googleapis.com/tekton-releases/dashboard/latest/release.yaml)
   kubectl apply --filename "${release_yaml}" >/dev/null
-  create_ingress tekton-pipelines tekton-dashboard ${DASHBOARD} 9097
+  create_httproute tekton-pipelines tekton-dashboard ${DASHBOARD} 9097
 }
 
 stop_kind() {
@@ -420,7 +435,7 @@ configure_pac() {
   show_step "Configuring PAC"
   [[ -n ${1:-} && ${1} == "--no-ingress" ]] && no_ingress=yes
   if [[ -z ${no_ingress} ]]; then
-    create_ingress pipelines-as-code pipelines-as-code-controller "${PAC}" 8080
+    create_httproute pipelines-as-code pipelines-as-code-controller "${PAC}" 8080
   fi
   patch_configmap "${PAC_CONTROLLER_TARGET_NS}"
 
@@ -672,7 +687,7 @@ EOF
   fi
 
   show_step "Creating ingress for ${pac_controller_label} controller"
-  create_ingress ${PAC_CONTROLLER_TARGET_NS} ${pac_controller_label}-controller "${gosmeeTargetURL}" 8080
+  create_httproute ${PAC_CONTROLLER_TARGET_NS} ${pac_controller_label}-controller "${gosmeeTargetURL}" 8080
   (kubectl delete deployment -n ${PAC_CONTROLLER_TARGET_NS} gosmee-${pac_controller_label} 2>&1 | grep -v "not found") || true
   if [[ ${CI_MODE} != "true" ]]; then
     start_user_gosmee ghe ${pac_controller_smee_url} "${gosmeeTargetURL}"
@@ -697,7 +712,7 @@ all() {
   run_hook pre-all
 
   run_with_hooks sync-kubeconfig sync_kubeconfig
-  run_with_hooks install-nginx install_nginx
+  run_with_hooks install-gateway install_gateway
   run_with_hooks install-registry install_registry
   run_with_hooks install-tekton install_tekton
 
@@ -880,7 +895,7 @@ show_component_menu() {
 
   echo ""
   echo_color brightgreen "Select optional components to install:"
-  echo_color yellow "(Core: Kind, Nginx, Registry, Tekton Pipelines are always installed)"
+  echo_color yellow "(Core: Kind, Envoy Gateway, Registry, Tekton Pipelines are always installed)"
   echo ""
 
   menu_items=$(build_component_menu)
@@ -909,7 +924,7 @@ show_selected_components() {
   echo ""
   echo_color brightgreen "Components to be installed:"
   echo " - Kind cluster"
-  echo " - Nginx ingress"
+  echo " - Envoy Gateway"
   echo " - Docker Registry"
   echo " - Tekton Pipelines"
 
@@ -952,7 +967,7 @@ function parse_args() {
     help,
     install-dashboard,
     install-forgejo,
-    install-nginx,
+    install-gateway,
     install-paac,
     install-postgresql,
     install-registry,
@@ -1102,14 +1117,14 @@ function parse_args() {
       run_with_hooks install-chains install_chains
       exit
       ;;
-    --install-nginx) # Install Nginx
-      run_with_hooks install-nginx install_nginx
+    --install-gateway) # Install Envoy Gateway
+      run_with_hooks install-gateway install_gateway
       exit
       ;;
     --all-to-tekton) # Install everything up to Tekton
       install_kind
       run_with_hooks sync-kubeconfig sync_kubeconfig
-      run_with_hooks install-nginx install_nginx
+      run_with_hooks install-gateway install_gateway
       run_with_hooks install-registry install_registry
       run_with_hooks install-tekton install_tekton
       show_config
