@@ -29,7 +29,7 @@ helm install forgejo oci://code.forgejo.org/forgejo-helm/forgejo \
   -f ${TMP} \
   --set ingress.enabled=false \
   --set route.host=${FORGE_HOST} \
-  --set gitea.config.server.domain=${FORGE_HOST} \
-  --set gitea.config.server.root_url=https://${FORGE_HOST} \
-  --set gitea.config.server.ssh_domain=${FORGE_HOST} \
+  --set gitea.config.server.DOMAIN=${FORGE_HOST} \
+  --set gitea.config.server.ROOT_URL=https://${FORGE_HOST} \
+  --set gitea.config.server.SSH_DOMAIN=${FORGE_HOST} \
   --create-namespace
