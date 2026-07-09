@@ -15,6 +15,9 @@ helm uninstall forgejo -n ${NS} >/dev/null 2>&1 || true
 helm install --wait -f ${fpath}/values.yaml \
   --replace \
   --version 15.1.0 \
+  --set gitea.config.server.DOMAIN=${FORGE_HOST} \
+  --set gitea.config.server.ROOT_URL=https://${FORGE_HOST} \
+  --set gitea.config.server.SSH_DOMAIN=${FORGE_HOST} \
   --create-namespace -n ${NS} forgejo oci://code.forgejo.org/forgejo-helm/forgejo
 
 # Route Forgejo via the shared Envoy Gateway
