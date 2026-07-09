@@ -11,6 +11,8 @@ jobs:
   test-startpaac:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      PAC_DOMAIN: 127.0.0.1.nip.io
 
     steps:
       - name: Checkout startpaac repository
@@ -138,6 +140,25 @@ jobs:
           kubectl wait --for=condition=Ready pods --all -n forgejo --timeout=60s
 
           echo "=== All smoke tests passed ==="
+
+      - name: Smoke test Forgejo sample repository clone
+        timeout-minutes: 5
+        run: |
+          set -euxo pipefail
+          forge_host="gitea.${PAC_DOMAIN}"
+          clone_dir=$(mktemp -d)
+
+          echo "=== Cloning nonadmin/sample from Forgejo ==="
+          git -c http.sslVerify=false clone \
+            "https://nonadmin:nonadmin@${forge_host}/nonadmin/sample.git" \
+            "${clone_dir}"
+
+          echo "=== Verify cloned repository content ==="
+          ls -la "${clone_dir}"
+          test -f "${clone_dir}/README.md"
+
+          rm -rf "${clone_dir}"
+          echo "=== Forgejo clone smoke test passed ==="
 
       - name: Collect diagnostics on failure
         if: failure()
