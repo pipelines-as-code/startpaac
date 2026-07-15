@@ -103,3 +103,24 @@ spec:
       allowedRoutes:
         namespaces:
           from: All
+---
+# Catch-all redirect so plain HTTP requests to any component hostname (which
+# only ever get an HTTPRoute on the "https" listener/section) are bounced to
+# HTTPS instead of falling through to Envoy's default 404. Without this,
+# hitting e.g. http://gitea.${PAC_DOMAIN} returns a bare 404 rather than
+# reaching the service.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-to-https-redirect
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+    - name: eg
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
