@@ -117,5 +117,59 @@ class LandingPageTest(unittest.TestCase):
         self.assertIn("&quot;hook_attributes&quot;", page)
 
 
+class ManifestServerTest(unittest.TestCase):
+    def setUp(self):
+        import threading
+        from http.server import HTTPServer
+
+        self.server = HTTPServer(("127.0.0.1", 0), gac.ManifestHandler)
+        self.port = self.server.server_address[1]
+        self.server.landing_page = b"<html>landing</html>"
+        self.server.expected_state = "st4te"
+        self.server.expected_host = f"127.0.0.1:{self.port}"
+        self.server.lock = threading.Lock()
+        self.server.api_url = "https://api.invalid"
+        self.server.result = None
+        self.server.failure = ""
+        self.server.done = threading.Event()
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+    def _get(self, path, host=None):
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.request("GET", path, headers={"Host": host or self.server.expected_host})
+            resp = conn.getresponse()
+            return resp.status, resp.read()
+        finally:
+            conn.close()
+
+    def test_landing_page_served_only_once(self):
+        status, body = self._get("/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"landing", body)
+        status, _ = self._get("/")
+        self.assertEqual(status, 410)
+
+    def test_rejects_unexpected_host_header(self):
+        status, _ = self._get("/", host="attacker.example.com")
+        self.assertEqual(status, 400)
+        # landing page must still be available for the legitimate origin
+        status, _ = self._get("/")
+        self.assertEqual(status, 200)
+
+    def test_callback_rejects_bad_state(self):
+        status, _ = self._get("/callback?state=wrong&code=abc")
+        self.assertEqual(status, 400)
+        self.assertTrue(self.server.done.is_set())
+
+
 if __name__ == "__main__":
     unittest.main()

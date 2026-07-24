@@ -153,8 +153,21 @@ class ManifestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 (http.server API)
         parsed = urllib.parse.urlparse(self.path)
         server = self.server
+        # Reject requests whose Host header does not match the loopback
+        # origin we advertised (defeats DNS-rebinding style access).
+        if self.headers.get("Host", "") != server.expected_host:
+            self._respond(400, b"invalid host")
+            return
         if parsed.path == "/":
-            self._respond(200, server.landing_page)
+            # Serve the state-bearing landing page only once so the state
+            # token cannot be harvested during the wait window.
+            with server.lock:
+                page = server.landing_page
+                server.landing_page = None
+            if page is None:
+                self._respond(410, b"landing page already used, rerun the setup")
+                return
+            self._respond(200, page)
             return
         if parsed.path != "/callback":
             self._respond(404, b"not found")
@@ -222,6 +235,8 @@ def main(argv: list[str]) -> int:
         github_new_app_url(args.github_url, args.org, state), manifest
     )
     server.expected_state = state
+    server.expected_host = f"127.0.0.1:{port}"
+    server.lock = threading.Lock()
     server.api_url = args.github_api_url
     server.result = None
     server.failure = ""

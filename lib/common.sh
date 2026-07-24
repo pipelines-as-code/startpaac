@@ -549,10 +549,14 @@ EOF
   else
     install -m 600 "${tmpunit}" "${unit}"
     rm -f "${tmpunit}"
-    systemctl --user daemon-reload
+    systemctl --user daemon-reload || true
   fi
   systemctl --user enable "${unit_name}" >/dev/null 2>&1 || true
-  systemctl --user restart "${unit_name}"
+  if ! systemctl --user restart "${unit_name}"; then
+    echo "Could not start the ${unit_name} systemd user service, run gosmee manually:"
+    print_gosmee_manual_command "${smeeurl}" "${targeturl}"
+    return 0
+  fi
   systemctl --user --no-pager status "${unit_name}" -o cat || true
 }
 

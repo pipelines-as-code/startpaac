@@ -454,7 +454,7 @@ persist_config_var() {
 # server to receive the GitHub redirect, then stores the credentials in pass
 # or in a plain text folder.
 setup_github_app() {
-  local storage location smee_url app_name org="" outdir summary app_url install_url
+  local storage location smee_url app_name org="" outdir summary app_url install_url persist_secret_folder=""
   show_step "GitHub App setup"
 
   require_tool python3
@@ -475,15 +475,12 @@ setup_github_app() {
   else
     storage=folder
   fi
-  PAC_SECRET_STORAGE=${storage}
-  persist_config_var PAC_SECRET_STORAGE "${PAC_SECRET_STORAGE}"
-
   if [[ ${storage} == pass ]]; then
     location="pass folder ${PAC_PASS_SECRET_FOLDER}"
   else
     if [[ -z ${PAC_SECRET_FOLDER:-} ]]; then
       PAC_SECRET_FOLDER="${HOME}/.local/share/startpaac/secrets"
-      persist_config_var PAC_SECRET_FOLDER "${PAC_SECRET_FOLDER}"
+      persist_secret_folder=1
     fi
     (umask 077 && mkdir -p "${PAC_SECRET_FOLDER}")
     location="folder ${PAC_SECRET_FOLDER}"
@@ -544,6 +541,14 @@ setup_github_app() {
     done
   fi
 
+  # Persist the storage preference only now that credentials were stored, so
+  # an aborted or failed setup never pins an empty backend in the config.
+  PAC_SECRET_STORAGE=${storage}
+  persist_config_var PAC_SECRET_STORAGE "${PAC_SECRET_STORAGE}"
+  if [[ -n ${persist_secret_folder} ]]; then
+    persist_config_var PAC_SECRET_FOLDER "${PAC_SECRET_FOLDER}"
+  fi
+
   app_url=$(jq -r '.html_url' <<<"${summary}")
   install_url=$(jq -r '.install_url' <<<"${summary}")
   echo_color brightgreen "GitHub App created: ${app_url}"
@@ -564,9 +569,14 @@ maybe_setup_github_app() {
   [[ ${CI_MODE} == "true" ]] && return 0
   [[ -t 0 && -t 1 ]] || return 0
   pac_secrets_complete && return 0
+  [[ ${PAC_SKIP_GITHUB_APP_PROMPT:-false} == "true" ]] && return 0
   echo_color yellow "No usable GitHub App credentials found (missing or empty secrets)."
   if _confirm "Create a GitHub App now? (opens your browser)"; then
     setup_github_app || echo_color brightred "GitHub App setup failed, continuing without secrets"
+  else
+    PAC_SKIP_GITHUB_APP_PROMPT=true
+    persist_config_var PAC_SKIP_GITHUB_APP_PROMPT true
+    echo "Not asking again on future runs; use 'startpaac --setup-github-app' when ready."
   fi
   return 0
 }
@@ -1364,6 +1374,10 @@ function parse_args() {
     echo "Installation cancelled."
     exit 1
   fi
+
+  # Run the interactive GitHub App setup up front, while the user is still at
+  # the keyboard, instead of minutes into the deployment.
+  [[ ${INSTALL_PAC} == "true" ]] && maybe_setup_github_app
 
   install_kind
   all

@@ -86,6 +86,10 @@ offer to create the GitHub App for you, or run it explicitly:
 ./startpaac --setup-github-app
 ```
 
+Declining the offer sets `PAC_SKIP_GITHUB_APP_PROMPT=true` in your config so
+future runs don't ask again; remove it (or run `--setup-github-app`) to set up
+later.
+
 The guided flow:
 
 1. Asks whether to create the app under your personal account or an organization.
