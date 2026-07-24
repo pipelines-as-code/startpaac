@@ -32,6 +32,13 @@ elif [[ -z ${PAC_DIR:-} ]]; then
 #
 # PAC_SECRET_FOLDER=~/path/to/secrets
 #
+# When both secret backends are configured, select which one startpaac uses.
+# PAC_SECRET_STORAGE=folder # or pass
+#
+# Set to true to stop interactive runs from offering the guided GitHub App
+# setup when credentials are missing (set automatically when you decline).
+# PAC_SKIP_GITHUB_APP_PROMPT=true
+#
 # TARGET_HOST is your vm where kind will be running, you need to have kind working there
 # set as local and unset all other variable to have it running on your local VM
 # TARGET_HOST=my.vm.lan
@@ -100,9 +107,14 @@ EOF
     done
   fi
 
-  echo "Adjust your PAC_DIR to where pipelines-as-code is checked out"
-  echo "And go to the directory ~/.local/share/startpaac/secrets and add the secrets into the files in there"
-  exit 1
+  if [[ ${SETUP_GITHUB_APP_ONLY:-false} == true ]]; then
+    source "${CONFIG_FILE}"
+  else
+    echo "Adjust your PAC_DIR to where pipelines-as-code is checked out"
+    echo "You can run './startpaac --setup-github-app' to create a GitHub App and fill the secrets automatically,"
+    echo "or go to the directory ~/.local/share/startpaac/secrets and add the secrets into the files in there"
+    exit 1
+  fi
 else
   echo "Config file not found, but PAC_DIR is set via environment - proceeding"
 fi
