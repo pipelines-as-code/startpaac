@@ -35,6 +35,10 @@ elif [[ -z ${PAC_DIR:-} ]]; then
 # When both secret backends are configured, select which one startpaac uses.
 # PAC_SECRET_STORAGE=folder # or pass
 #
+# Set to true to stop interactive runs from offering the guided GitHub App
+# setup when credentials are missing (set automatically when you decline).
+# PAC_SKIP_GITHUB_APP_PROMPT=true
+#
 # TARGET_HOST is your vm where kind will be running, you need to have kind working there
 # set as local and unset all other variable to have it running on your local VM
 # TARGET_HOST=my.vm.lan
