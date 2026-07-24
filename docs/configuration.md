@@ -73,6 +73,50 @@ github/apps/my-app
 
 Set `PAC_SECRET_FOLDER` to a directory with the same structure, files in plain text.
 
+If both backends are configured, set `PAC_SECRET_STORAGE` to `pass` or `folder`
+to select which one startpaac uses. The guided GitHub App setup saves this
+selection automatically.
+
+### Automatic GitHub App creation
+
+If no usable credentials are found (files missing or empty), interactive runs
+offer to create the GitHub App for you, or run it explicitly:
+
+```shell
+./startpaac --setup-github-app
+```
+
+The guided flow:
+
+1. Asks whether to create the app under your personal account or an organization.
+2. Generates a webhook relay URL from <https://hook.pipelinesascode.com>
+   (development relay only — no support or security guarantees).
+3. Opens your browser on GitHub's [App Manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest);
+   a small local Python server receives the redirect and exchanges the
+   temporary code for the app credentials.
+4. Stores the credentials in your configured `pass` folder, or as plain files
+   in `~/.local/share/startpaac/secrets` (persisted as `PAC_SECRET_FOLDER` in
+   your config).
+5. Shows the app installation URL — install the app on the repositories you
+   want to use with PAC.
+6. Offers to run gosmee as a persistent user service to forward webhooks.
+
+### Gosmee webhook forwarding service
+
+GitHub cannot reach a local Kind cluster directly, so a
+[gosmee](https://github.com/chmouel/gosmee) client forwards the relay URL to
+your PAC controller. startpaac offers to manage it as:
+
+- **Linux**: a systemd user unit `~/.config/systemd/user/startpaac-gosmee.service`
+- **macOS**: a LaunchAgent `~/Library/LaunchAgents/com.startpaac.gosmee.plist`
+  (logs in `~/Library/Logs/startpaac-gosmee.log`; requires a logged-in GUI session)
+
+Only files containing the `Managed by startpaac` marker are ever updated;
+a pre-existing unit or plist of your own is left alone (a legacy
+`gosmee.service` systemd unit is simply restarted). If you decline or the
+platform is unsupported, the exact `gosmee client` command to run manually is
+printed instead.
+
 ### Second GitHub controller
 
 Set `PAC_PASS_SECOND_FOLDER` (same structure as above) and use `--github-second-ctrl` / `--second-secret=SECRET`.

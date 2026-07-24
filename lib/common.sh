@@ -260,6 +260,87 @@ _confirm() {
   fi
 }
 
+# Wrapper around gum input with bash fallback
+# Usage: _input "Prompt" "default value"
+_input() {
+  local prompt="${1:-Value?}"
+  local default="${2:-}"
+  if command -v gum &>/dev/null; then
+    gum input --prompt "${prompt}: " --value "${default}" </dev/tty
+  else
+    local answer
+    read -r -p "${prompt} [${default}]: " answer </dev/tty
+    echo "${answer:-${default}}"
+  fi
+}
+
+# Read one PAC secret key from pass or the plain text secret folder.
+# Optional second argument forces the storage: "pass", "folder" or "auto".
+# Prints nothing when the key is missing or unreadable.
+pac_secret_read() {
+  local key=$1 storage=${2:-auto}
+  if [[ ${storage} == auto ]]; then
+    storage=$(pac_secret_storage)
+    [[ -n ${storage} ]] || return 0
+  fi
+  if [[ ${storage} == pass && -n ${PAC_PASS_SECRET_FOLDER:-} ]]; then
+    pass show "${PAC_PASS_SECRET_FOLDER}/${key}" 2>/dev/null || true
+  elif [[ ${storage} == folder && -n ${PAC_SECRET_FOLDER:-} ]]; then
+    cat "${PAC_SECRET_FOLDER}/${key}" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# Resolve the configured secret backend. An explicit preference wins; otherwise
+# prefer a complete pass backend and fall back to a complete plain folder.
+pac_secret_storage() {
+  local preferred=${PAC_SECRET_STORAGE:-}
+  if [[ ${preferred} == pass && -n ${PAC_PASS_SECRET_FOLDER:-} ]] && command -v pass &>/dev/null; then
+    echo pass
+    return 0
+  fi
+  if [[ ${preferred} == folder && -n ${PAC_SECRET_FOLDER:-} ]]; then
+    echo folder
+    return 0
+  fi
+  if [[ -n ${PAC_PASS_SECRET_FOLDER:-} ]] && command -v pass &>/dev/null && pac_secrets_complete pass; then
+    echo pass
+    return 0
+  fi
+  if [[ -n ${PAC_SECRET_FOLDER:-} ]] && pac_secrets_complete folder; then
+    echo folder
+    return 0
+  fi
+  if [[ -n ${PAC_PASS_SECRET_FOLDER:-} ]] && command -v pass &>/dev/null; then
+    echo pass
+  elif [[ -n ${PAC_SECRET_FOLDER:-} ]]; then
+    echo folder
+  fi
+}
+
+# Return 0 when all GitHub App credentials are present and non-empty.
+# Optional first argument scopes the check to one storage (pass|folder|auto).
+pac_secrets_complete() {
+  local storage=${1:-auto} key
+  if [[ ${storage} == auto ]]; then
+    storage=$(pac_secret_storage)
+    [[ -n ${storage} ]] || return 1
+  fi
+  for key in github-application-id github-private-key webhook.secret; do
+    [[ -n "$(pac_secret_read "${key}" "${storage}")" ]] || return 1
+  done
+  return 0
+}
+
+xml_escape() {
+  sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"
+}
+
+# Print the configured smee/relay URL (empty when unset)
+get_smee_url() {
+  pac_secret_read smee
+}
+
 # Wrapper around gum choose --no-limit with bash fallback
 # Usage: echo "items" | _choose_multi [--selected="item1,item2"]
 _choose_multi() {
@@ -374,6 +455,192 @@ spec:
             ]
 EOF
   kubectl apply -f /tmp/${deploymentName}.yaml
+}
+
+GOSMEE_SERVICE_MARKER="Managed by startpaac"
+
+# Print the manual gosmee client command to run in a terminal
+print_gosmee_manual_command() {
+  local smeeurl=$1 targeturl=$2
+  echo "Run gosmee manually to forward webhooks:"
+  echo "  gosmee client --output json --log-level ${GOSMEE_LOG_LEVEL:-debug} --target-connection-timeout ${GOSMEE_TARGET_TIMEOUT:-5} --target-retries ${GOSMEE_TARGET_RETRIES:-5} --saveDir /tmp/replay ${smeeurl} ${targeturl}"
+}
+
+# Create/update and start a persistent per-user gosmee forwarder.
+# Uses a systemd user unit on Linux and a LaunchAgent on macOS, falling
+# back to printing the manual command everywhere else.
+# Usage: start_gosmee_forwarder <service-name> <smee-url> <target-url>
+start_gosmee_forwarder() {
+  local service=${1:-gosmee} smeeurl=${2:-} targeturl=${3:-}
+  if [[ -z ${smeeurl} || -z ${targeturl} ]]; then
+    echo "Skipping gosmee forwarder: no smee URL or target URL configured"
+    return 0
+  fi
+  case "$(uname -s)" in
+  Darwin)
+    start_gosmee_launchagent "${service}" "${smeeurl}" "${targeturl}"
+    ;;
+  Linux)
+    if type -p systemctl >/dev/null 2>&1; then
+      start_gosmee_systemd "${service}" "${smeeurl}" "${targeturl}"
+    else
+      print_gosmee_manual_command "${smeeurl}" "${targeturl}"
+    fi
+    ;;
+  *)
+    print_gosmee_manual_command "${smeeurl}" "${targeturl}"
+    ;;
+  esac
+}
+
+start_gosmee_systemd() {
+  local service=$1 smeeurl=$2 targeturl=$3
+  local legacy_unit="${HOME}/.config/systemd/user/${service}.service"
+  local unit_name="startpaac-${service}"
+  local unit="${HOME}/.config/systemd/user/${unit_name}.service"
+  local gosmee_bin
+
+  # Backwards compatibility: a unit named after the service that we do not
+  # manage belongs to the user, only restart it.
+  if [[ -e ${legacy_unit} ]] && ! grep -q "${GOSMEE_SERVICE_MARKER}" "${legacy_unit}"; then
+    show_step "Restarting user systemd service ${service}"
+    systemctl --user restart "${service}" >/dev/null 2>&1 || true
+    systemctl --user --no-pager status "${service}" -o cat || true
+    return 0
+  fi
+
+  gosmee_bin=$(command -v gosmee || true)
+  if [[ -z ${gosmee_bin} ]]; then
+    echo "gosmee is not installed (see https://github.com/chmouel/gosmee)"
+    print_gosmee_manual_command "${smeeurl}" "${targeturl}"
+    return 0
+  fi
+
+  if [[ ! -e ${unit} ]]; then
+    if [[ ${CI_MODE:-false} == "true" ]] || ! _confirm "Create a systemd user service (${unit_name}) to forward webhooks with gosmee?"; then
+      print_gosmee_manual_command "${smeeurl}" "${targeturl}"
+      return 0
+    fi
+  fi
+
+  show_step "Configuring systemd user service ${unit_name}"
+  mkdir -p "$(dirname "${unit}")"
+  local tmpunit
+  tmpunit=$(mktemp)
+  cat >"${tmpunit}" <<EOF
+# ${GOSMEE_SERVICE_MARKER}
+[Unit]
+Description=Gosmee webhook forwarder for startpaac (${service})
+After=network-online.target
+
+[Service]
+ExecStart=${gosmee_bin} client --output json --log-level ${GOSMEE_LOG_LEVEL:-debug} --target-connection-timeout ${GOSMEE_TARGET_TIMEOUT:-5} --target-retries ${GOSMEE_TARGET_RETRIES:-5} --saveDir /tmp/replay ${smeeurl} ${targeturl}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+  if [[ -e ${unit} ]] && cmp -s "${tmpunit}" "${unit}"; then
+    rm -f "${tmpunit}"
+  else
+    install -m 600 "${tmpunit}" "${unit}"
+    rm -f "${tmpunit}"
+    systemctl --user daemon-reload
+  fi
+  systemctl --user enable "${unit_name}" >/dev/null 2>&1 || true
+  systemctl --user restart "${unit_name}"
+  systemctl --user --no-pager status "${unit_name}" -o cat || true
+}
+
+start_gosmee_launchagent() {
+  local service=$1 smeeurl=$2 targeturl=$3
+  local label="com.startpaac.${service}"
+  local plist="${HOME}/Library/LaunchAgents/${label}.plist"
+  local logfile="${HOME}/Library/Logs/startpaac-${service}.log"
+  local gosmee_bin escaped_gosmee_bin escaped_label escaped_logfile escaped_smeeurl escaped_targeturl
+
+  if [[ -e ${plist} ]] && ! grep -q "${GOSMEE_SERVICE_MARKER}" "${plist}"; then
+    echo "Refusing to overwrite ${plist}: it is not managed by startpaac"
+    print_gosmee_manual_command "${smeeurl}" "${targeturl}"
+    return 0
+  fi
+
+  gosmee_bin=$(command -v gosmee || true)
+  if [[ -z ${gosmee_bin} ]]; then
+    echo "gosmee is not installed (see https://github.com/chmouel/gosmee)"
+    print_gosmee_manual_command "${smeeurl}" "${targeturl}"
+    return 0
+  fi
+
+  if [[ ! -e ${plist} ]]; then
+    if [[ ${CI_MODE:-false} == "true" ]] || ! _confirm "Create a LaunchAgent (${label}) to forward webhooks with gosmee?"; then
+      print_gosmee_manual_command "${smeeurl}" "${targeturl}"
+      return 0
+    fi
+  fi
+
+  show_step "Configuring LaunchAgent ${label}"
+  mkdir -p "${HOME}/Library/LaunchAgents" "${HOME}/Library/Logs"
+  escaped_gosmee_bin=$(printf '%s' "${gosmee_bin}" | xml_escape)
+  escaped_label=$(printf '%s' "${label}" | xml_escape)
+  escaped_logfile=$(printf '%s' "${logfile}" | xml_escape)
+  escaped_smeeurl=$(printf '%s' "${smeeurl}" | xml_escape)
+  escaped_targeturl=$(printf '%s' "${targeturl}" | xml_escape)
+  local tmpplist
+  tmpplist=$(mktemp)
+  cat >"${tmpplist}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ${GOSMEE_SERVICE_MARKER} -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${escaped_label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${escaped_gosmee_bin}</string>
+    <string>client</string>
+    <string>--output</string>
+    <string>json</string>
+    <string>--log-level</string>
+    <string>${GOSMEE_LOG_LEVEL:-debug}</string>
+    <string>--target-connection-timeout</string>
+    <string>${GOSMEE_TARGET_TIMEOUT:-5}</string>
+    <string>--target-retries</string>
+    <string>${GOSMEE_TARGET_RETRIES:-5}</string>
+    <string>--saveDir</string>
+    <string>/tmp/replay</string>
+    <string>${escaped_smeeurl}</string>
+    <string>${escaped_targeturl}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>${escaped_logfile}</string>
+  <key>StandardErrorPath</key>
+  <string>${escaped_logfile}</string>
+</dict>
+</plist>
+EOF
+  install -m 600 "${tmpplist}" "${plist}"
+  rm -f "${tmpplist}"
+  local domain
+  domain="gui/$(id -u)"
+  launchctl bootout "${domain}/${label}" 2>/dev/null || true
+  launchctl bootstrap "${domain}" "${plist}" 2>/dev/null ||
+    launchctl load -w "${plist}" 2>/dev/null || {
+    echo "Could not load the LaunchAgent (no GUI session?)"
+    print_gosmee_manual_command "${smeeurl}" "${targeturl}"
+    return 0
+  }
+  launchctl kickstart -k "${domain}/${label}" 2>/dev/null || true
+  echo "LaunchAgent ${label} is running, logs in ${logfile}"
 }
 
 HOOKS_DIR="${HOOKS_DIR:-${HOME}/.config/startpaac/hooks}"

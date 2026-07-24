@@ -28,6 +28,22 @@ for i in github-application-id github-private-key smee webhook.secret; do
 done
 ```
 
+Don't have a GitHub App yet? Skip that step: when `startpaac` runs interactively
+and finds no usable credentials, it offers to create one for you. It opens your
+browser on GitHub's App Manifest flow (personal account or organization),
+generates a webhook relay URL on [hook.pipelinesascode.com](https://hook.pipelinesascode.com)
+(development only, no security guarantees), stores the credentials (in `pass`
+if configured, otherwise in `~/.local/share/startpaac/secrets`), and offers to
+run [gosmee](https://github.com/chmouel/gosmee) as a user service (systemd on
+Linux, LaunchAgent on macOS) to forward webhooks to your local cluster. You can
+also run it directly:
+
+```shell
+./startpaac --setup-github-app
+```
+
+After creating the app, install it on the repositories you want to use with PAC.
+
 Run the interactive installer:
 
 ```shell
@@ -74,6 +90,7 @@ Configure PAC on an existing cluster (e.g. OpenShift):
 | `-s, --sync-kubeconfig` | Sync kubeconfig from remote host |
 | `-G, --start-user-gosmee` | Start gosmee locally |
 | `-S, --github-second-ctrl` | Deploy second GitHub controller |
+| `--setup-github-app` | Create a GitHub App (manifest flow) and store its credentials |
 | `--install-gateway` | Install Envoy Gateway |
 | `--install-dashboard` | Install Tekton Dashboard |
 | `--install-tekton` | Install Tekton |

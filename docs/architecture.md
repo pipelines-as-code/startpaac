@@ -260,6 +260,14 @@ PAC Controller (reconciliation)
    - Development only
    - Environment: `PAC_SECRET_FOLDER`
 
+When no usable credentials exist, interactive runs (and `--setup-github-app`)
+can create the GitHub App automatically via GitHub's App Manifest flow: a local
+Python callback server (`lib/github_app_create.py`) receives the redirect,
+exchanges the temporary code for credentials, and startpaac stores them in
+`pass` or `~/.local/share/startpaac/secrets`. Webhook delivery is forwarded
+from a hook.pipelinesascode.com relay by a gosmee user service (systemd user
+unit on Linux, LaunchAgent on macOS).
+
 ### Required Secrets
 ```
 secrets/
