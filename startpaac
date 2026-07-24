@@ -5,6 +5,12 @@ set -eufo pipefail
 
 scale_down_controller=""
 
+SETUP_GITHUB_APP_ONLY=false
+for arg in "$@"; do
+  [[ ${arg} == --setup-github-app ]] && SETUP_GITHUB_APP_ONLY=true
+done
+export SETUP_GITHUB_APP_ONLY
+
 Miself=$(readlink -f "$0")
 SP=$(dirname "${Miself}")
 source "${SP}/lib/common.sh"
@@ -12,7 +18,9 @@ source "${SP}/lib/config.sh"
 
 PAC_CONTROLLER_TARGET_NS=pipelines-as-code
 _git_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
-if [[ -d ${_git_root}/config ]]; then
+if [[ ${SETUP_GITHUB_APP_ONLY} == true ]]; then
+  :
+elif [[ -d ${_git_root}/config ]]; then
   PAC_DIR=${_git_root}
 else
   [[ -z ${PAC_DIR:-""} ]] && {
@@ -85,7 +93,7 @@ else
 fi
 PAC_WEBHOOK_SECRET=${PAC_WEBHOOK_SECRET:-""}
 
-[[ -z ${DOMAIN_NAME} || -z ${TARGET_HOST} || -z ${TARGET_BIND_IP} || -z ${REGISTRY} || -z ${DASHBOARD} || -z ${PAC} ]] && {
+[[ ${SETUP_GITHUB_APP_ONLY} != true && (-z ${DOMAIN_NAME} || -z ${TARGET_HOST} || -z ${TARGET_BIND_IP:-} || -z ${REGISTRY} || -z ${DASHBOARD:-} || -z ${PAC}) ]] && {
   echo "Need to set DOMAIN_NAME, TARGET_HOST, TARGET_BIND_IP, REGISTRY, DASHBOARD and PAC in your $HOME/.config/startpaac/config"
   exit 1
 }
@@ -98,18 +106,14 @@ trap clean EXIT
 
 export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config.${DOMAIN_NAME%%.*}}
 
-if [[ -z ${TARGET_HOST} ]] || [[ -z ${DOMAIN_NAME} ]] || [[ -z ${REGISTRY} ]] || [[ -z ${KUBECONFIG} ]]; then
+if [[ ${SETUP_GITHUB_APP_ONLY} != true ]] && { [[ -z ${TARGET_HOST} ]] || [[ -z ${DOMAIN_NAME} ]] || [[ -z ${REGISTRY} ]] || [[ -z ${KUBECONFIG} ]]; }; then
   echo "Need env variable TARGET_HOST, DOMAIN_NAME and REGISTRY"
   exit 1
 fi
 
 show_config() {
   local smee_url protocol
-  if [[ -n ${PAC_PASS_SECRET_FOLDER:-""} ]]; then
-    smee_url=$(pass show ${PAC_PASS_SECRET_FOLDER}/smee)
-  elif [[ -n ${PAC_SECRET_FOLDER:-""} ]]; then
-    smee_url=$(cat ${PAC_SECRET_FOLDER}/smee)
-  fi
+  smee_url=$(get_smee_url)
   protocol="https"
   cat <<EOF
 Using configuration on ${TARGET_HOST}:
@@ -433,24 +437,162 @@ patch_configmap() {
     }}'
 }
 
+# Persist (add or update) a variable assignment in the startpaac config file
+persist_config_var() {
+  local var=$1 value=$2
+  [[ -e ${CONFIG_FILE} ]] || return 0
+  if grep -q "^${var}=" "${CONFIG_FILE}"; then
+    sed -i.startpaac.bak "s|^${var}=.*|${var}=${value}|" "${CONFIG_FILE}" &&
+      rm -f "${CONFIG_FILE}.startpaac.bak"
+  else
+    printf '%s=%s\n' "${var}" "${value}" >>"${CONFIG_FILE}"
+  fi
+}
+
+# Guided GitHub App creation via the GitHub App Manifest flow.
+# Generates a hook.pipelinesascode.com relay URL, runs a small local python
+# server to receive the GitHub redirect, then stores the credentials in pass
+# or in a plain text folder.
+setup_github_app() {
+  local storage location smee_url app_name org="" outdir summary app_url install_url
+  show_step "GitHub App setup"
+
+  require_tool python3
+  require_tool curl
+  require_tool jq
+
+  # Storage: when both pass and a plain folder are configured, let the user pick
+  local have_pass=""
+  [[ -n ${PAC_PASS_SECRET_FOLDER:-} ]] && command -v pass &>/dev/null && have_pass=1
+  if [[ -n ${have_pass} && -n ${PAC_SECRET_FOLDER:-} ]]; then
+    if _confirm "Store credentials with pass under ${PAC_PASS_SECRET_FOLDER}? (No = plain files in ${PAC_SECRET_FOLDER})"; then
+      storage=pass
+    else
+      storage=folder
+    fi
+  elif [[ -n ${have_pass} ]]; then
+    storage=pass
+  else
+    storage=folder
+  fi
+  PAC_SECRET_STORAGE=${storage}
+  persist_config_var PAC_SECRET_STORAGE "${PAC_SECRET_STORAGE}"
+
+  if [[ ${storage} == pass ]]; then
+    location="pass folder ${PAC_PASS_SECRET_FOLDER}"
+  else
+    if [[ -z ${PAC_SECRET_FOLDER:-} ]]; then
+      PAC_SECRET_FOLDER="${HOME}/.local/share/startpaac/secrets"
+      persist_config_var PAC_SECRET_FOLDER "${PAC_SECRET_FOLDER}"
+    fi
+    (umask 077 && mkdir -p "${PAC_SECRET_FOLDER}")
+    location="folder ${PAC_SECRET_FOLDER}"
+  fi
+  echo "Credentials will be stored in ${location}"
+
+  if pac_secrets_complete "${storage}"; then
+    _confirm "GitHub App credentials already exist in ${location}. Create a new app and replace them?" || return 0
+  fi
+
+  if ! _confirm "Create the GitHub App under your personal account? (No = organization)"; then
+    org=$(_input "GitHub organization name" "")
+    [[ -z ${org} ]] && {
+      echo "No organization given, aborting GitHub App setup"
+      return 1
+    }
+  fi
+
+  app_name=$(_input "GitHub App name (must be globally unique)" "pac-${USER}-$((RANDOM % 9000 + 1000))")
+  [[ -z ${app_name} ]] && {
+    echo "No app name given, aborting GitHub App setup"
+    return 1
+  }
+
+  echo "Generating a webhook relay URL from https://hook.pipelinesascode.com"
+  echo_color yellow "Note: this public relay is for development only, with no support or security guarantees."
+  smee_url=$(curl -fsSL https://hook.pipelinesascode.com/new | tr -d '[:space:]')
+  [[ ${smee_url} == https://* ]] || {
+    echo "Failed to generate a relay URL from hook.pipelinesascode.com"
+    return 1
+  }
+  echo "Relay URL: ${smee_url}"
+
+  outdir=$(mktemp -d /tmp/.startpaac-ghapp.XXXXXX)
+  # shellcheck disable=SC2317
+  __clean_ghapp() { rm -rf "${outdir}"; }
+  trap __clean_ghapp RETURN
+
+  local -a helper_args=(--app-name "${app_name}" --webhook-url "${smee_url}" --output-dir "${outdir}")
+  [[ -n ${org} ]] && helper_args+=(--org "${org}")
+
+  echo "Opening your browser to create the GitHub App (waiting up to 5 minutes)..."
+  if ! summary=$(python3 "${SP}/lib/github_app_create.py" "${helper_args[@]}"); then
+    echo "GitHub App creation failed"
+    return 1
+  fi
+
+  printf '%s' "${smee_url}" >"${outdir}/smee"
+
+  local key
+  if [[ ${storage} == pass ]]; then
+    for key in github-application-id github-private-key webhook.secret smee; do
+      pass insert -m -f "${PAC_PASS_SECRET_FOLDER}/${key}" <"${outdir}/${key}" >/dev/null
+    done
+  else
+    for key in github-application-id github-private-key webhook.secret smee; do
+      install -m 600 "${outdir}/${key}" "${PAC_SECRET_FOLDER}/${key}"
+    done
+  fi
+
+  app_url=$(jq -r '.html_url' <<<"${summary}")
+  install_url=$(jq -r '.install_url' <<<"${summary}")
+  echo_color brightgreen "GitHub App created: ${app_url}"
+  echo "Now install the app on the repositories you want to use with PAC:"
+  echo_color brightwhite "  ${install_url}"
+  if _confirm "Open the app installation page in your browser?"; then
+    python3 -c 'import sys, webbrowser; webbrowser.open(sys.argv[1])' "${install_url}"
+  fi
+
+  # Offer a persistent webhook forwarder now that we have a relay URL
+  start_user_gosmee gosmee
+  return 0
+}
+
+# Offer the guided GitHub App setup when credentials are missing, but only
+# in interactive (non-CI, tty) runs.
+maybe_setup_github_app() {
+  [[ ${CI_MODE} == "true" ]] && return 0
+  [[ -t 0 && -t 1 ]] || return 0
+  pac_secrets_complete && return 0
+  echo_color yellow "No usable GitHub App credentials found (missing or empty secrets)."
+  if _confirm "Create a GitHub App now? (opens your browser)"; then
+    setup_github_app || echo_color brightred "GitHub App setup failed, continuing without secrets"
+  fi
+  return 0
+}
+
 configure_pac() {
-  local pac_controller_secret=pipelines-as-code-secret no_ingress=
+  local pac_controller_secret=pipelines-as-code-secret no_ingress="" credential_storage=""
   show_step "Configuring PAC"
   [[ -n ${1:-} && ${1} == "--no-ingress" ]] && no_ingress=yes
+  maybe_setup_github_app
   if [[ -z ${no_ingress} ]]; then
     create_httproute pipelines-as-code pipelines-as-code-controller "${PAC}" 8080
   fi
   patch_configmap "${PAC_CONTROLLER_TARGET_NS}"
 
-  if [[ -n ${PAC_PASS_SECRET_FOLDER:-} ]]; then
+  credential_storage=$(pac_secret_storage)
+  if [[ ${credential_storage} == pass ]] && pac_secrets_complete pass; then
     echo "Installing PAC secrets from pass folder: ${PAC_PASS_SECRET_FOLDER}"
     create_pac_secret "${PAC_PASS_SECRET_FOLDER}" "${pac_controller_secret}" "${PAC_CONTROLLER_TARGET_NS}" pass show
-  elif [[ -n ${PAC_SECRET_FOLDER:-} ]]; then
+  elif [[ ${credential_storage} == folder ]] && pac_secrets_complete folder; then
     echo "Installing PAC secrets from plain text folder: ${PAC_SECRET_FOLDER}"
     create_pac_secret "${PAC_SECRET_FOLDER}" "${pac_controller_secret}" "${PAC_CONTROLLER_TARGET_NS}" cat
   else
     cat <<EOF
   **No secret has been installed**
+
+  No usable GitHub App credentials were found (files may be missing or empty).
 
   You need to either create a pass https://www.passwordstore.org/ folder with
   github-application-id github-private-key webhook.secret information in there
@@ -459,8 +601,7 @@ configure_pac() {
   Or have a plain text folder with the same structure and export the
   PAC_SECRET_FOLDER variable
 
-  Or have nothing and install the secrets manually after running the startpaac
-  script.
+  Or run "startpaac --setup-github-app" to create a GitHub App automatically.
 EOF
     kubectl delete secret -n pipelines-as-code pipelines-as-code-secret >/dev/null 2>/dev/null || true
   fi
@@ -601,21 +742,15 @@ function sync_kubeconfig() {
 function start_user_gosmee() {
   local service=${1:-"gosmee"}
   local smeeurl=${2:-}
-  local controllerURL=${3:-}
-  local protocol="https"
-  type -p systemctl >/dev/null 2>/dev/null && return
-  [[ -e ${HOME}/.config/systemd/user/${service}.service ]] || {
-    if [[ -n ${smeeurl} ]]; then
-      show_step "Run gosmee manually"
-      echo "gosmee client --output json --log-level ${GOSMEE_LOG_LEVEL} --target-connection-timeout ${GOSMEE_TARGET_TIMEOUT} --target-retries ${GOSMEE_TARGET_RETRIES} --saveDir /tmp/replay ${smeeurl} ${protocol}://${controllerURL}"
-    else
-      echo "Skipping running gosmee: cannot find ${HOME}/.config/systemd/user/${service}.service"
-    fi
-    return
+  local targeturl=${3:-}
+  [[ -z ${smeeurl} ]] && smeeurl=$(get_smee_url)
+  [[ -z ${smeeurl} ]] && {
+    echo "Skipping gosmee webhook forwarder: no smee URL configured"
+    return 0
   }
-  show_step "Running ${service} systemd service locally for user $USER"
-  systemctl --user restart ${service} >/dev/null 2>&1 || true
-  systemctl --user status ${service} -o cat
+  [[ -z ${targeturl} ]] && targeturl=${PAC_WEB_URL:-"https://${PAC}"}
+  [[ ${targeturl} != http* ]] && targeturl="https://${targeturl}"
+  start_gosmee_forwarder "${service}" "${smeeurl}" "${targeturl}"
   if kubectl get deployment gosmee-ghe -n "${PAC_CONTROLLER_TARGET_NS}" >/dev/null 2>&1; then
     kubectl scale deployment gosmee-ghe -n "${PAC_CONTROLLER_TARGET_NS}" --replicas=0 >/dev/null || true
     echo "Deployment $(echo_color red gosmee-ghe) has been scaled down"
@@ -746,11 +881,9 @@ all() {
   fi
   [[ ${INSTALL_GITHUB_SECOND_CTRL} == "false" || ${INSTALL_GITHUB_SECOND_CTRL} == "" ]] || run_with_hooks install-github-second-ctrl install_github_second_ctrl
 
-  if [[ "${USE_NODEPORT_WEBHOOK}" != "true" ]]; then
-    start_user_gosmee gosmee
-  else
-    echo "NodePort webhook enabled, skipping gosmee"
-  fi
+  # Even with the NodePort webhook, GitHub.com cannot reach a local cluster:
+  # a gosmee forwarder relays the public smee URL to the local endpoint.
+  start_user_gosmee gosmee
 
   show_step "Setting current namespace context to pipelines-as-code"
   set_namespace pipelines-as-code
@@ -951,7 +1084,7 @@ function parse_args() {
   done
 
   # Now check tools with correct CI_MODE value
-  if ! check_tools; then
+  if [[ ${SETUP_GITHUB_APP_ONLY} != true ]] && ! check_tools; then
     exit 1
   fi
 
@@ -980,6 +1113,7 @@ function parse_args() {
     stop-kind,
     redeploy-kind,
     second-secret:,
+    setup-github-app,
     start-user-gosmee,
     debug-image,
     configure-pac-target,
@@ -1098,6 +1232,10 @@ function parse_args() {
       ;;
     --show-config) # Show configuration
       show_config
+      exit
+      ;;
+    --setup-github-app) # Create a GitHub App with the manifest flow and store its credentials
+      setup_github_app
       exit
       ;;
     --install-registry) # Install docker registry

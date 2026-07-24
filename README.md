@@ -19,7 +19,19 @@ PAC_SECRET_FOLDER=~/secrets
 EOF
 ```
 
-Create your [GitHub App](https://pipelinesascode.com/docs/install/github_apps/) and store the credentials:
+A GitHub App is created automatically: when `startpaac` runs interactively
+and finds no credentials, it opens your browser on GitHub's App Manifest flow
+(personal account or organization), generates a webhook relay URL on
+[hook.pipelinesascode.com](https://hook.pipelinesascode.com) (development only,
+no security guarantees), stores the credentials (in `pass` if configured,
+otherwise in `~/.local/share/startpaac/secrets`), and offers to run
+[gosmee](https://github.com/chmouel/gosmee) as a user service (systemd on
+Linux, LaunchAgent on macOS) to forward webhooks to your local cluster.
+
+After creating the app, install it on the repositories you want to use with PAC.
+
+If you already have a GitHub App, it is better to reuse it instead of creating a
+new one every time. Store your existing credentials and skip the automatic setup:
 
 ```shell
 mkdir -p ~/secrets
@@ -32,6 +44,12 @@ Run the interactive installer:
 
 ```shell
 ./startpaac
+```
+
+You can also create a GitHub App directly without running the full installer:
+
+```shell
+./startpaac --setup-github-app
 ```
 
 ## What gets installed
@@ -74,6 +92,7 @@ Configure PAC on an existing cluster (e.g. OpenShift):
 | `-s, --sync-kubeconfig` | Sync kubeconfig from remote host |
 | `-G, --start-user-gosmee` | Start gosmee locally |
 | `-S, --github-second-ctrl` | Deploy second GitHub controller |
+| `--setup-github-app` | Create a GitHub App (manifest flow) and store its credentials |
 | `--install-gateway` | Install Envoy Gateway |
 | `--install-dashboard` | Install Tekton Dashboard |
 | `--install-tekton` | Install Tekton |

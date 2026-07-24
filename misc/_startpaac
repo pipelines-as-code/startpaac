@@ -57,6 +57,7 @@ _arguments -C \
     '--install-registry[Install Docker registry]' \
     '--debug-image[Use a debug image]' \
     '--second-secret[Set the secret for second controller]:secret:->pass_profiles' \
+    '--setup-github-app[Create a GitHub App and store its credentials]' \
     '--configure-pac[Configure PAC]' \
     '--show-config[Show config]' \
     '*:argument:->args' && ret=0
