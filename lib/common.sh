@@ -472,8 +472,14 @@ print_gosmee_manual_command() {
 # Usage: start_gosmee_forwarder <service-name> <smee-url> <target-url>
 start_gosmee_forwarder() {
   local service=${1:-gosmee} smeeurl=${2:-} targeturl=${3:-}
-  if [[ -z ${smeeurl} || -z ${targeturl} ]]; then
+  # A target like "https://" (unset PAC/TARGET_HOST) has no host component and
+  # would install a permanently failing, auto-restarting service.
+  local targethost=${targeturl#*://}
+  targethost=${targethost%%/*}
+  if [[ -z ${smeeurl} || -z ${targeturl} || -z ${targethost} ]]; then
     echo "Skipping gosmee forwarder: no smee URL or target URL configured"
+    [[ -n ${smeeurl} && -z ${targethost} ]] &&
+      echo "Set PAC (or TARGET_HOST) in your configuration to enable webhook forwarding"
     return 0
   fi
   case "$(uname -s)" in

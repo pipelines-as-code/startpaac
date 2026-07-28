@@ -758,8 +758,8 @@ function start_user_gosmee() {
     echo "Skipping gosmee webhook forwarder: no smee URL configured"
     return 0
   }
-  [[ -z ${targeturl} ]] && targeturl=${PAC_WEB_URL:-"https://${PAC}"}
-  [[ ${targeturl} != http* ]] && targeturl="https://${targeturl}"
+  [[ -z ${targeturl} ]] && targeturl=${PAC_WEB_URL:-${PAC:+"https://${PAC}"}}
+  [[ -n ${targeturl} && ${targeturl} != http* ]] && targeturl="https://${targeturl}"
   start_gosmee_forwarder "${service}" "${smeeurl}" "${targeturl}"
   if kubectl get deployment gosmee-ghe -n "${PAC_CONTROLLER_TARGET_NS}" >/dev/null 2>&1; then
     kubectl scale deployment gosmee-ghe -n "${PAC_CONTROLLER_TARGET_NS}" --replicas=0 >/dev/null || true

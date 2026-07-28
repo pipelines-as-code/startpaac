@@ -91,6 +91,14 @@ out=$(start_gosmee_forwarder gosmee "" "http://target" 2>&1)
 assert "forwarder skips without a smee url" \
   grep -q "Skipping gosmee forwarder" <<<"${out}"
 
+# A target with no host component ("https://" from an unset PAC/TARGET_HOST)
+# must never install a service.
+out=$(start_gosmee_forwarder gosmee "https://smee/x" "https://" 2>&1)
+assert "forwarder skips a target with no host" \
+  grep -q "Skipping gosmee forwarder" <<<"${out}"
+assert "forwarder hints at the missing PAC setting" \
+  grep -q "Set PAC" <<<"${out}"
+
 export HOME="${TESTTMP}/home"
 mkdir -p "${HOME}/Library/LaunchAgents"
 
