@@ -32,6 +32,16 @@ assert_not() {
 TESTTMP=$(mktemp -d /tmp/.startpaac-tests.XXXXXX)
 trap 'rm -rf "${TESTTMP}"' EXIT
 
+# --- provider hostname validation ---
+assert "provider hostname accepts a DNS name" \
+  is_provider_hostname "ghe.example.com"
+assert_not "provider hostname rejects a URL" \
+  is_provider_hostname "https://ghe.example.com"
+assert_not "provider hostname rejects a port" \
+  is_provider_hostname "ghe.example.com:8443"
+assert_not "provider hostname rejects an empty value" \
+  is_provider_hostname ""
+
 # --- pac_secret_read / pac_secrets_complete with a plain folder ---
 unset PAC_PASS_SECRET_FOLDER
 unset PAC_SECRET_STORAGE

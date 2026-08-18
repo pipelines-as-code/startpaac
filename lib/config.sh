@@ -35,6 +35,10 @@ elif [[ -z ${PAC_DIR:-} ]]; then
 # When both secret backends are configured, select which one startpaac uses.
 # PAC_SECRET_STORAGE=folder # or pass
 #
+# Hostname of the GitHub Enterprise instance used by the second controller.
+# Use only the hostname, without an https:// prefix, path, or port.
+# PAC_GITHUB_SECOND_HOSTNAME=ghe.example.com
+#
 # Set to true to stop interactive runs from offering the guided GitHub App
 # setup when credentials are missing (set automatically when you decline).
 # PAC_SKIP_GITHUB_APP_PROMPT=true

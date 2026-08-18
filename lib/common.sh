@@ -248,6 +248,13 @@ require_tool() {
   fi
 }
 
+# Return success when the value is a DNS hostname suitable for a provider
+# allowlist. URLs, paths, ports, and whitespace are intentionally rejected.
+is_provider_hostname() {
+  local hostname=${1:-}
+  [[ ${hostname} =~ ^[[:alnum:]]([[:alnum:].-]*[[:alnum:]])?$ ]]
+}
+
 # Wrapper around gum confirm with bash fallback
 _confirm() {
   local prompt="${1:-Confirm?}"
@@ -687,6 +694,7 @@ export_hook_environment() {
         PAC_DEBUG_IMAGE
         PAC_DIR
         PAC_DOMAIN
+        PAC_GITHUB_SECOND_HOSTNAME
         PAC_IMAGE_NONROOT
         PAC_PASS_SECOND_FOLDER
         PAC_PASS_SECRET_FOLDER
