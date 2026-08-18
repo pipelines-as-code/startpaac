@@ -48,6 +48,7 @@ FORGE_HOST=${FORGE_HOST:-""}
 INSTALL_GITHUB_SECOND_CTRL=${INSTALL_GITHUB_SECOND_CTRL:-""}
 INSTALL_FORGE=${INSTALL_FORGE:-"true"}
 PAC_PASS_SECOND_FOLDER=${PAC_PASS_SECOND_FOLDER:-}
+PAC_GITHUB_SECOND_HOSTNAME=${PAC_GITHUB_SECOND_HOSTNAME:-${TEST_GITHUB_SECOND_API_URL:-}}
 PAC_DEBUG_IMAGE=${PAC_DEBUG_IMAGE:-registry.access.redhat.com/ubi9/ubi-minimal}
 PAC_IMAGE_NONROOT=${PAC_IMAGE_NONROOT:-"true"}
 GOSMEE_LOG_LEVEL=${GOSMEE_LOG_LEVEL:-debug}
@@ -812,6 +813,15 @@ function install_github_second_ctrl() {
     tee /tmp/.second.controller.debug.yaml |
     env KO_DOCKER_REPO="${REGISTRY}" ko apply -f- -B --sbom=none "${KO_EXTRA_FLAGS[@]}"
   patch_configmap ${PAC_CONTROLLER_TARGET_NS} ${pac_controller_configmap}
+  if [[ -n ${PAC_GITHUB_SECOND_HOSTNAME} ]]; then
+    is_provider_hostname "${PAC_GITHUB_SECOND_HOSTNAME}" || {
+      echo "PAC_GITHUB_SECOND_HOSTNAME must be a hostname without a scheme, path, or port"
+      exit 1
+    }
+    kubectl patch configmap -n "${PAC_CONTROLLER_TARGET_NS}" -p \
+      "{\"data\":{\"trusted-provider-hostnames\": \"${PAC_GITHUB_SECOND_HOSTNAME}\"}}" \
+      --type merge "${pac_controller_configmap}"
+  fi
   kubectl delete secret ${pac_controller_secret} -n ${PAC_CONTROLLER_TARGET_NS} >/dev/null 2>/dev/null || true
   kubectl create secret generic ${pac_controller_secret} -n ${PAC_CONTROLLER_TARGET_NS} >/dev/null
   if [[ -n ${PAC_PASS_SECOND_FOLDER} ]]; then

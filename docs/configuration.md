@@ -123,7 +123,12 @@ printed instead.
 
 ### Second GitHub controller
 
-Set `PAC_PASS_SECOND_FOLDER` (same structure as above) and use `--github-second-ctrl` / `--second-secret=SECRET`.
+Set `PAC_PASS_SECOND_FOLDER` (same structure as above) and use
+`--github-second-ctrl` / `--second-secret=SECRET`.
+For GitHub Enterprise, also set `PAC_GITHUB_SECOND_HOSTNAME` to the instance
+hostname, such as `ghe.example.com`. startpaac adds this hostname to the second
+controller's trusted provider list so repository webhooks can authenticate
+before a GitHub App request has been received.
 
 ## PostgreSQL
 
