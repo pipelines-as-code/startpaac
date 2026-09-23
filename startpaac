@@ -169,7 +169,7 @@ check_kind() {
 
 install_kind() {
   [[ "${TARGET_HOST}" != local ]] && check_kind
-  stop_kind
+  run_with_hooks stop-kind stop_kind
   show_step "Creating kind cluster"
   local kfilename="${SP}/lib/kind/kind.yaml"
 
@@ -1330,11 +1330,11 @@ function parse_args() {
       exit
       ;;
     --stop-kind) # Stop Kind
-      stop_kind
+      run_with_hooks stop-kind stop_kind
       exit
       ;;
     --redeploy-kind) # Redeploy Kind
-      stop_kind
+      run_with_hooks stop-kind stop_kind
       install_kind
       run_with_hooks sync-kubeconfig sync_kubeconfig
       exit
