@@ -1,0 +1,4 @@
+interface:
+  display_name: "Startpaac"
+  short_description: "Set up, inspect, or redeploy a local PAC environment"
+  default_prompt: "Use $startpaac to check my local PAC setup and show me what needs fixing."

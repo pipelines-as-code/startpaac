@@ -1,10 +1,10 @@
 # shellcheck shell=bash disable=SC1090
 CONFIG_FILE=${STARTPAC_CONFIG_FILE:-$HOME/.config/startpaac/config}
-echo "Loading configuration from ${CONFIG_FILE}"
+[[ ${CLI_MANAGED:-false} == true ]] || echo "Loading configuration from ${CONFIG_FILE}"
 
 if [[ -e "${CONFIG_FILE}" ]]; then
   source "${CONFIG_FILE}"
-elif [[ -z ${PAC_DIR:-} ]]; then
+elif [[ ${STARTPAAC_CREATE_CONFIG:-true} == true && -z ${PAC_DIR:-} ]]; then
   # Only require config file if PAC_DIR is not already set (e.g., in CI)
   mkdir -p "$(dirname "$CONFIG_FILE")"
   echo "Creating a sample $HOME/.config/startpaac/config file"
@@ -119,6 +119,6 @@ EOF
     echo "or go to the directory ~/.local/share/startpaac/secrets and add the secrets into the files in there"
     exit 1
   fi
-else
+elif [[ ${CLI_MANAGED:-false} != true ]]; then
   echo "Config file not found, but PAC_DIR is set via environment - proceeding"
 fi

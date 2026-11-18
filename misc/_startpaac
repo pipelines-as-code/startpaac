@@ -34,11 +34,22 @@ _get_pass_profiles() {
 
 # Main argument specification
 _arguments -C \
+    '--install-skills[Link the bundled startpaac skill]:target:(agents claude all)' \
+    '--up[Create or reuse a local PAC development cluster]' \
+    '--describe[Describe agent interfaces]' \
+    '--doctor[Check local setup prerequisites]' \
+    '--status[Inspect local component readiness]' \
+    '--plan[Preview a core action without executing it]' \
+    '--non-interactive[Disable prompts and implicit service changes]' \
+    '--output[Select output format]:format:(text json)' \
     '(-h --help)'{-h,--help}'[Display help information]' \
     '(-a --all)'{-a,--all}'[Install everything]' \
     '(-A --all-but-kind)'{-A,--all-but-kind}'[Install everything but kind]' \
     '(-k --kind)'{-k,--kind}'[Install Kind]' \
-    '(-g --install-forge)'{-g,--install-forge}'[Install Forgejo]' \
+    '(-g --install-forgejo --install-forge)'{-g,--install-forgejo,--install-forge}'[Install Forgejo]' \
+    '(-i --menu --interactive)'{-i,--menu,--interactive}'[Force interactive component selection]' \
+    '(-R --reset-preferences)'{-R,--reset-preferences}'[Reset saved component preferences]' \
+    '--ci[Use legacy noninteractive CI installation]' \
     '(-c --deploy-component)'{-c,--deploy-component}'[Deploy a specific PAC component]:component:->components' \
     '(-p --install-paac)'{-p,--install-paac}'[Deploy and configure PAC]' \
     '(-s --sync-kubeconfig)'{-s,--sync-kubeconfig}'[Sync kubeconfig from remote host]' \
@@ -54,11 +65,15 @@ _arguments -C \
     '--install-postgresql[Install a postgresql database]' \
     '--all-to-tekton[Install everything up to Tekton]' \
     '--install-dashboard[Install Tekton dashboard]' \
+    '--install-triggers[Install Tekton Triggers]' \
+    '--install-chains[Install Tekton Chains]' \
     '--install-registry[Install Docker registry]' \
+    '--setup-forgejo-sample[Create sample Forgejo repositories]' \
     '--debug-image[Use a debug image]' \
     '--second-secret[Set the secret for second controller]:secret:->pass_profiles' \
     '--setup-github-app[Create a GitHub App and store its credentials]' \
     '--configure-pac[Configure PAC]' \
+    '--configure-pac-target[Configure PAC on an existing cluster]:kubeconfig:_files:namespace: :secrets directory:_files -/' \
     '--show-config[Show config]' \
     '*:argument:->args' && ret=0
 

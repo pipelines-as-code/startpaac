@@ -9,6 +9,8 @@ on:
       - '**.sh'
       - 'startpaac'
       - 'lib/**'
+      - 'tests/**'
+      - '.github/workflows/shellcheck.yml'
   workflow_dispatch:
 
 jobs:
@@ -19,6 +21,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Run shell and CLI tests
+        run: |
+          bash tests/test_shell_helpers.sh
+          python3 -m unittest discover -s tests
 
       - name: Run ShellCheck
         uses: ludeeus/action-shellcheck@2.0.0

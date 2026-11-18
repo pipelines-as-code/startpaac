@@ -4,6 +4,30 @@ Set up [Pipelines-as-Code](https://pipelinesascode.com) on a local Kind cluster 
 
 [![ShellCheck](https://github.com/chmouel/startpaac/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/chmouel/startpaac/actions/workflows/shellcheck.yml)
 
+## Use with an agent
+
+Install the bundled [startpaac skill](skills/startpaac/SKILL.md) for Codex,
+Claude Code, or another skill-capable agent, then ask it to set up a PAC dev
+environment or redeploy a controller, watcher, or webhook change.
+
+```sh
+./startpaac --install-skills agents  # ~/.agents/skills
+./startpaac --install-skills claude  # ~/.claude/skills
+./startpaac --install-skills all     # both
+```
+
+The skill follows the checkout, so updating startpaac updates the skill too.
+
+```sh
+./startpaac --doctor --output json
+./startpaac --up --plan --output json
+./startpaac --up --non-interactive --output json
+./startpaac --status --output json
+```
+
+`--up` reuses a compatible local Kind cluster and existing GitHub App credentials.
+See [agent installation and CLI interfaces](docs/agents.md).
+
 ## Quick start
 
 This is meant for local development only.
@@ -86,7 +110,7 @@ Configure PAC on an existing cluster (e.g. OpenShift):
 | `-i, --menu, --interactive` | Force interactive component selection |
 | `-R, --reset-preferences` | Reset saved component preferences |
 | `-k, --kind` | (Re)install Kind |
-| `-g, --install-forge` | Install Forgejo |
+| `-g, --install-forgejo` | Install Forgejo |
 | `-c, --deploy-component` | Deploy a component (controller, watcher, webhook) |
 | `-p, --install-paac` | Deploy and configure PAC |
 | `-s, --sync-kubeconfig` | Sync kubeconfig from remote host |
@@ -103,7 +127,6 @@ Configure PAC on an existing cluster (e.g. OpenShift):
 | `--stop-kind` | Stop Kind |
 | `--debug-image` | Use debug image for PAC controller |
 | `--show-config` | Show PAC configuration |
-| `--apply-non-root` | Apply non-root config to PAC controller |
 | `-h, --help` | Show help |
 
 ## Configuration

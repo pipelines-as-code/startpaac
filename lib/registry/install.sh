@@ -67,9 +67,6 @@ show_step "Copying self certs to the control plane"
 protocol="https"
 
 show_step "Waiting for registry ${REGISTRY} to be ready..."
-until curl -o/dev/null --fail -k -s "${protocol}://${REGISTRY}/v2/"; do
-  echo_color -n brightwhite "."
-  sleep 5
-done
+wait_for_registry "${protocol}://${REGISTRY}/v2/"
 echo ""
 echo "Registry ${REGISTRY} is up and running."
