@@ -238,12 +238,19 @@ EOF
 }
 
 install_gateway() {
-  local envoy_gateway_version="v1.8.2"
-  show_step "Installing Envoy Gateway"
-  helm upgrade --install --wait \
-    --version "${envoy_gateway_version}" \
-    --namespace envoy-gateway-system --create-namespace \
-    envoy-gateway oci://docker.io/envoyproxy/gateway-helm >/dev/null
+  local envoy_gateway_version="v1.8.2" existing_release=''
+  local -a helm_action=(upgrade --install)
+  show_step "Setting up Envoy Gateway"
+  if [[ ${CLI_ACTION} == --up ]]; then
+    existing_release=$(helm list --namespace envoy-gateway-system --filter '^envoy-gateway$' --short)
+    helm_action=(install)
+  fi
+  if [[ -z ${existing_release} ]]; then
+    helm "${helm_action[@]}" --wait \
+      --version "${envoy_gateway_version}" \
+      --namespace envoy-gateway-system --create-namespace \
+      envoy-gateway oci://docker.io/envoyproxy/gateway-helm >/dev/null
+  fi
   wait_for_resource deployment envoy-gateway-system envoy-gateway
 
   show_step "Creating wildcard TLS cert for *.${PAC_DOMAIN}"
