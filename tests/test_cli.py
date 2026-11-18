@@ -101,7 +101,18 @@ elif tool == "curl":
     if "-o" in args:
         pathlib.Path(args[args.index("-o") + 1]).write_text("{}")
 elif tool == "helm":
-    print("twuni")
+    if os.environ.get("FAKE_HELM_CHECK_TARGET") and (
+        os.environ.get("HELM_KUBECONTEXT") != "kind-kind"
+        or any(name.startswith("HELM_KUBE") and name != "HELM_KUBECONTEXT" for name in os.environ)
+    ):
+        sys.exit(64)
+    envoy_release = state.parent / "envoy-helm-release"
+    if args[0] == "list" and envoy_release.exists():
+        print("envoy-gateway")
+    elif args[0] in ["install", "upgrade"] and "envoy-gateway" in args:
+        envoy_release.touch()
+    elif args[0] in ["repo", "status"]:
+        print("twuni")
 elif tool == "ko":
     (state.parent / "ko-cwd").write_text(os.getcwd())
     if os.environ.get("FAKE_FAIL_KO"):
@@ -360,6 +371,17 @@ class AgentCliTest(unittest.TestCase):
         self.assertFalse(any(cmd[:3] == ["kubectl", "delete", "secret"] for cmd in commands))
         self.assertFalse(any(cmd[0] == "systemctl" and "restart" in cmd for cmd in commands))
         self.assertFalse(any(cmd[0] == "helm" and "forgejo" in cmd for cmd in commands))
+        gateway_installs = [cmd for cmd in commands if cmd[:2] == ["helm", "install"] and "envoy-gateway" in cmd]
+        self.assertEqual(len(gateway_installs), 1)
+        self.assertFalse(any(cmd[:2] == ["helm", "upgrade"] for cmd in commands))
+
+    def test_up_pins_helm_to_the_validated_kind_context(self):
+        self.existing_cluster()
+        config = pathlib.Path(self.env["STARTPAC_CONFIG_FILE"])
+        config.parent.mkdir(parents=True)
+        config.write_text("export HELM_KUBEAPISERVER=https://other.example\n")
+        env = dict(self.env, FAKE_HELM_CHECK_TARGET="1", HELM_KUBECONTEXT="other", HELM_KUBECAFILE="custom-ca.crt")
+        self.run_cli("--up", "--output=json", env=env)
 
     def test_incompatible_cluster_is_preserved(self):
         self.existing_cluster()

@@ -493,6 +493,9 @@ cli_execute_core() {
       kind export kubeconfig --name kind --kubeconfig "${KUBECONFIG}"
     fi
     kubectl config use-context kind-kind
+    unset HELM_KUBEAPISERVER HELM_KUBECAFILE HELM_KUBEINSECURE_SKIP_TLS_VERIFY HELM_KUBETLS_SERVER_NAME
+    unset HELM_KUBEASGROUPS HELM_KUBEASUSER HELM_KUBETOKEN
+    export HELM_KUBECONTEXT=kind-kind
     export INSTALL_PAC=true INSTALL_TEKTON_DASHBOARD=true INSTALL_FORGE=false
     export INSTALL_TEKTON_TRIGGERS=false INSTALL_TEKTON_CHAINS=false INSTALL_POSTGRESQL=false
     export INSTALL_CUSTOM_OBJECT_ENABLED=false INSTALL_GITHUB_SECOND_CTRL=false

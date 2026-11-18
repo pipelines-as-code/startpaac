@@ -78,6 +78,8 @@ Dashboard. It ignores saved component preferences and leaves other installed
 components alone. It reuses a compatible `kind` cluster or creates one when
 absent. An incompatible cluster produces an error; it is never deleted as a
 fallback. Registry installation can restart containerd on a reused cluster.
+`--up` reuses installed Envoy Gateway and registry Helm releases. Run
+`--install-gateway` to upgrade Envoy Gateway explicitly.
 `--up` leaves existing webhook forwarders alone in both output modes.
 
 Agent commands use the Docker Kind provider. Select a Docker context with a
