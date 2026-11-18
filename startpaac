@@ -16,7 +16,6 @@ source "${SP}/lib/common.sh"
 source "${SP}/lib/cli.sh"
 
 initialize_runtime() {
-  source "${SP}/lib/config.sh"
   [[ ${CLI_LOCAL_TARGET} != true ]] || TARGET_HOST=local
   PAC_CONTROLLER_TARGET_NS=pipelines-as-code
   _git_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
@@ -36,7 +35,10 @@ initialize_runtime() {
     fi
   fi
 
-  TARGET_HOST=${TARGET_HOST:-local}
+  TARGET_HOST=${TARGET_HOST:-}
+  if [[ ${CLI_MANAGED} == true ]]; then
+    TARGET_HOST=${TARGET_HOST:-local}
+  fi
   DOMAIN_NAME=${DOMAIN_NAME:-""}
   PAC_DOMAIN=${PAC_DOMAIN:-""}
   PAC=${PAC:-""}
@@ -61,13 +63,6 @@ initialize_runtime() {
   INSTALL_TEKTON_DASHBOARD=${INSTALL_TEKTON_DASHBOARD:-"true"}
   INSTALL_POSTGRESQL=${INSTALL_POSTGRESQL:-"false"}
   INSTALL_CUSTOM_OBJECT_ENABLED=${INSTALL_CUSTOM_OBJECT_ENABLED:-"false"}
-  FORCE_INTERACTIVE=${FORCE_INTERACTIVE:-"false"}
-  NON_INTERACTIVE=${NON_INTERACTIVE:-"false"}
-
-  # CI mode settings
-  CI_MODE=${CI_MODE:-"false"}
-  export CI_MODE
-
   if [[ ${TARGET_HOST} == local ]]; then
     KO_EXTRA_FLAGS=(--insecure-registry)
     DOMAIN_NAME=${TARGET_HOST}
@@ -334,6 +329,7 @@ stop_kind() {
 
 install_pac() {
   tmppac=$(mktemp /tmp/.pac.config.XXXXXX)
+  CLI_TEMP_FILES+=("${tmppac}")
 
   if [[ -n ${1:-""} ]]; then
     show_step "Deploying PAC $1"
@@ -772,7 +768,7 @@ function sync_kubeconfig() {
 }
 
 function start_user_gosmee() {
-  if [[ ${NON_INTERACTIVE:-false} == true ]]; then
+  if [[ ${CLI_ACTION:-} == --up || ${NON_INTERACTIVE:-false} == true ]]; then
     echo 'Webhook forwarding services are unchanged; run --start-user-gosmee separately if needed.'
     return 0
   fi

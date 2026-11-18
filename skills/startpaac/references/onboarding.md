@@ -57,6 +57,7 @@ use `PAC_SECRET_STORAGE=folder` or `PAC_SECRET_STORAGE=pass` to select it.
 | Result | Recovery |
 | --- | --- |
 | `cluster_missing` | For inspection, report that Kind is absent. For a redeploy, creation is a separate full-stack operation. |
+| `docker_endpoint_nonlocal`, `docker_endpoint_unavailable`, or `kind_provider` | Use the Docker Kind provider and a Docker context with a local Unix socket. Check `DOCKER_HOST` and `DOCKER_CONTEXT` before changing the target. |
 | `cluster_unavailable` | Check Docker daemon access and the intended Docker context. Check before switching contexts because the name `kind` can exist on multiple Docker daemons. |
 | `cluster_compatible` failed | Use a compatible local cluster. `-a`, `--kind`, and `--redeploy-kind` recreate Kind, so they require a request that covers replacement. |
 | `kubeconfig_path` or `kubeconfig_mismatch` | Use a single dedicated kubeconfig that identifies the intended local Kind cluster. Preserve the shared or mismatched file. The local default is `~/.kube/config.local`. |
