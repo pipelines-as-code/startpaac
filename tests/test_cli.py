@@ -80,10 +80,14 @@ elif tool == "kubectl":
             ("tekton-pipelines", "tekton-pipelines-controller"), ("tekton-pipelines", "tekton-pipelines-webhook"),
             ("tekton-pipelines", "tekton-dashboard")] + [("pipelines-as-code", "pipelines-as-code-" + c)
             for c in ["controller", "watcher", "webhook"]]
-        print(json.dumps({"items": [{"metadata": {"namespace": ns, "name": name, "generation": 2},
+        items = [{"metadata": {"namespace": ns, "name": name, "generation": 2},
             "spec": {"replicas": 1}, "status": {"observedGeneration": 1 if os.environ.get("FAKE_STALE") else 2,
             "replicas": 2 if os.environ.get("FAKE_ROLLING_UPDATE") and name == "pipelines-as-code-watcher" else 1,
-            "availableReplicas": 1, "updatedReplicas": 1}} for ns, name in wanted]}))
+            "availableReplicas": 1, "updatedReplicas": 1}} for ns, name in wanted]
+        for index in range(int(os.environ.get("FAKE_MANY_DEPLOYMENTS", "0"))):
+            items.append({"metadata": {"namespace": "filler", "name": "filler-%d" % index, "generation": 1,
+                "annotations": {"payload": "x" * 2048}}, "spec": {"replicas": 1}, "status": {}})
+        print(json.dumps({"items": items}))
     elif args[0] == "apply" and os.environ.get("FAKE_APPLY_TARGET"):
         path = pathlib.Path(os.environ["KUBECONFIG"]).resolve()
         pathlib.Path(os.environ["FAKE_APPLY_TARGET"]).write_text(str(path))
@@ -648,6 +652,14 @@ class AgentCliTest(unittest.TestCase):
         self.assertTrue(all(not component["ready"] for component in data["data"]["components"]))
         self.assertEqual(data["data"]["webhook_delivery"], "unverified")
         self.assertEqual(self.mutations(), [])
+
+    def test_status_reads_a_deployment_list_larger_than_one_argument(self):
+        self.existing_cluster()
+        self.env["FAKE_MANY_DEPLOYMENTS"] = "200"
+        data = json.loads(self.run_cli("--status", "--output=json").stdout)
+        self.assertTrue(data["ok"])
+        self.assertIn("pipelines-as-code-watcher",
+            [component["name"] for component in data["data"]["components"] if component["ready"]])
 
     def test_status_waits_for_old_replicas_to_leave_a_rollout(self):
         self.existing_cluster()

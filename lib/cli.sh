@@ -450,14 +450,15 @@ cli_read_status() {
     cli_error cluster_unreachable 'Cannot query deployments in the target cluster.' 'Check Docker, kubeconfig, and Kubernetes API availability.'
     return 0
   fi
-  components=$(jq -cn --argjson deployments "${deployments}" --argjson wanted "${CLI_DEPLOYMENTS}" '
+  components=$(jq -c --argjson wanted "${CLI_DEPLOYMENTS}" '
+    . as $deployments |
     $wanted |
     map(. as $wanted | ([$deployments.items[] | select(.metadata.namespace == $wanted[0] and .metadata.name == $wanted[1])][0]) as $d |
       ($d.spec.replicas // 1) as $desired | ($d.status.updatedReplicas // 0) as $updated |
       {namespace:$wanted[0],name:$wanted[1],ready:($d != null and $desired > 0 and
         ($d.status.observedGeneration // 0) >= ($d.metadata.generation // 0) and
         $updated >= $desired and ($d.status.replicas // 0) == $updated and
-        ($d.status.availableReplicas // 0) >= $updated)})')
+        ($d.status.availableReplicas // 0) >= $updated)})' <<<"${deployments}")
   if ! jq -e 'all(.[]; .ready)' <<<"${components}" >/dev/null; then
     cli_error components_not_ready 'Some development components are missing or not ready.' 'Inspect the component states and Kubernetes events.'
   fi
