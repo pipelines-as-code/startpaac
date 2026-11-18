@@ -78,6 +78,11 @@ Dashboard. It ignores saved component preferences and leaves other installed
 components alone. It reuses a compatible `kind` cluster or creates one when
 absent. An incompatible cluster produces an error; it is never deleted as a
 fallback. Registry installation can restart containerd on a reused cluster.
+`--up` leaves existing webhook forwarders alone in both output modes.
+
+Agent commands use the Docker Kind provider. Select a Docker context with a
+local Unix socket. TCP and SSH endpoints are rejected, including those set
+through `DOCKER_HOST`.
 
 The selected kubeconfig must contain only the local Kind cluster and its
 context and user. The default is

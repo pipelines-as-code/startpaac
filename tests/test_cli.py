@@ -18,6 +18,11 @@ with open(os.environ["FAKE_LOG"], "a") as log:
 if tool == "git":
     print(os.environ.get("FAKE_GIT_ROOT") or os.environ.get("PAC_DIR", ""))
 elif tool == "kind":
+    if os.environ.get("FAKE_KIND_DOCKER_HOST") and (
+        os.environ.get("DOCKER_HOST") != os.environ["FAKE_KIND_DOCKER_HOST"]
+        or os.environ.get("DOCKER_CONTEXT") or os.environ.get("KIND_EXPERIMENTAL_PROVIDER") != "docker"
+    ):
+        sys.exit(64)
     if args[:2] == ["get", "clusters"] and state.exists():
         print("kind")
     elif args[:2] == ["get", "kubeconfig"]:
@@ -32,7 +37,11 @@ elif tool == "kind":
     elif args[:2] == ["export", "kubeconfig"]:
         pathlib.Path(args[args.index("--kubeconfig") + 1]).write_text("kind kubeconfig")
 elif tool == "docker":
-    if args[0] == "inspect":
+    if args[:2] == ["context", "inspect"]:
+        if os.environ.get("FAKE_DOCKER_CONTEXT_ERROR"):
+            sys.exit(1)
+        print(os.environ.get("DOCKER_HOST") or os.environ.get("FAKE_DOCKER_ENDPOINT", "unix:///var/run/docker.sock"))
+    elif args[0] == "inspect":
         ports = {} if os.environ.get("FAKE_INCOMPATIBLE") else {
             str(port) + "/tcp": [{"HostPort": str(host), "HostIp": "127.0.0.1"}]
             for port, host in [(31080, 80), (31443, 443), (30080, 30080)]}
@@ -138,7 +147,7 @@ class AgentCliTest(unittest.TestCase):
             path = self.bin / tool
             path.write_text("#!" + sys.executable + "\n" + MOCK)
             path.chmod(0o755)
-        self.env = {"PATH": str(self.bin) + ":/usr/bin:/bin", "HOME": str(self.home),
+        self.env = {"PATH": str(self.bin) + ":/usr/bin:/bin", "HOME": str(self.home), "TARGET_HOST": "local",
             "PAC_DIR": str(self.pac), "PAC_SECRET_FOLDER": str(self.secrets),
             "STARTPAC_CONFIG_FILE": str(self.home / ".config/startpaac/config"),
             "CERT_DIR": str(certs), "FAKE_STATE": str(self.state), "FAKE_LOG": str(self.log)}
@@ -222,6 +231,19 @@ class AgentCliTest(unittest.TestCase):
         self.assertTrue(any(action["flag"] == "--up" for action in data["data"]["actions"]))
         self.assertFalse(marker.exists())
         self.assertEqual(self.commands(), [])
+
+    def test_inspections_preserve_caller_temp_files(self):
+        paths = {name: self.base / name for name in ["TMPFILE", "tmppac"]}
+        for path in paths.values():
+            path.write_text("caller file")
+        config = pathlib.Path(self.env["STARTPAC_CONFIG_FILE"])
+        config.parent.mkdir(parents=True)
+        config.write_text("".join(f'{name}="{path}"\n' for name, path in paths.items()))
+        env = dict(self.env, **{name: str(path) for name, path in paths.items()})
+        for args, code in [(('--describe',), 0), (('--status',), 1), (('--up', '--plan'), 0)]:
+            with self.subTest(args=args):
+                self.run_cli(*args, "--output=json", code=code, env=env)
+                self.assertEqual([path.read_text() for path in paths.values()], ["caller file"] * 2)
 
     def test_invalid_arguments_fail_before_configuration(self):
         for args in [("--all", "--output=json"), ("--up", "--stop-kind", "--output=json"),
@@ -384,13 +406,56 @@ class AgentCliTest(unittest.TestCase):
 
     def test_explicit_teardown_needs_no_source_or_credentials(self):
         self.existing_cluster()
+        del self.env["TARGET_HOST"]
+        endpoint = "unix:///tmp/custom-docker.sock"
         self.env.update(PAC_DIR=str(self.base / "missing-source"), PAC_SECRET_FOLDER=str(self.base / "missing-secrets"))
+        self.env.update(DOCKER_CONTEXT="alternate-local", FAKE_DOCKER_ENDPOINT=endpoint, FAKE_KIND_DOCKER_HOST=endpoint)
         plan = json.loads(self.run_cli("--stop-kind", "--plan", "--output=json").stdout)
         self.assertTrue(plan["data"]["destructive"])
         self.assertTrue(self.state.exists())
         self.run_cli("--stop-kind", "--non-interactive", "--output=json")
         self.assertFalse(self.state.exists())
         self.assertFalse((self.home / ".kube/config.local").exists())
+
+    def test_managed_teardown_requires_a_local_docker_socket(self):
+        self.existing_cluster()
+        kubeconfig = self.home / ".kube/config.local"
+        cases = [
+            ({"DOCKER_HOST": "tcp://192.0.2.1:2375"}, "docker_endpoint_nonlocal"),
+            ({"DOCKER_CONTEXT": "remote", "FAKE_DOCKER_ENDPOINT": "ssh://docker.example"}, "docker_endpoint_nonlocal"),
+            ({"FAKE_DOCKER_CONTEXT_ERROR": "1"}, "docker_endpoint_unavailable"),
+            ({"KIND_EXPERIMENTAL_PROVIDER": "podman"}, "kind_provider"),
+        ]
+        for overrides, error in cases:
+            with self.subTest(overrides=overrides):
+                env = dict(self.env, **overrides)
+                for options in [("--plan",), ()]:
+                    data = json.loads(self.run_cli("--stop-kind", *options, "--output=json", code=1, env=env).stdout)
+                    self.assertIn(error, [issue["code"] for issue in data["errors"]])
+                self.assertTrue(kubeconfig.is_file())
+                self.assertTrue(self.state.exists())
+        self.assertFalse(any(cmd[0] == "kind" for cmd in self.commands()))
+
+    def test_legacy_actions_require_a_target_host(self):
+        self.existing_cluster()
+        for target in [None, ""]:
+            env = dict(self.env)
+            if target is None:
+                del env["TARGET_HOST"]
+            else:
+                env["TARGET_HOST"] = target
+            for args in [("--stop-kind",), ("--ci", "-a")]:
+                with self.subTest(target=target, args=args):
+                    result = self.run_cli(*args, code=1, env=env)
+                    self.assertIn("TARGET_HOST", result.stdout + result.stderr)
+                    self.assertEqual(self.state.read_text(), "existing-identity")
+        self.assertFalse(any(cmd[0] == "kind" for cmd in self.commands()))
+
+    def test_plain_up_leaves_existing_forwarder_in_place(self):
+        self.existing_cluster()
+        self.run_cli("--up")
+        self.assertFalse(any(cmd[:3] == ["kubectl", "scale", "deployment"] and "gosmee-ghe" in cmd
+            for cmd in self.commands()))
 
     def test_legacy_ci_install_preserves_explicit_recreation(self):
         self.env.update(INSTALL_FORGE="false", INSTALL_TEKTON_DASHBOARD="false")
@@ -478,6 +543,13 @@ class AgentCliTest(unittest.TestCase):
         source = pathlib.Path(plan["data"]["pac_dir"])
         self.assertTrue(source.is_absolute())
         self.assertEqual(source.resolve(), self.pac)
+
+        hook_log.unlink()
+        applied_target.unlink()
+        config.write_text(config.read_text() + "NON_INTERACTIVE=true\n")
+        self.run_cli("-c", "watcher", env=env, cwd=invocation)
+        self.assertEqual(applied_target.read_text(), str(invocation / "kubeconfig"))
+        self.assertEqual(hook_log.read_text().splitlines(), [str(expected_hook)])
 
     def test_legacy_deployment_respects_pac_dir_in_another_repository(self):
         unrelated = self.base / "unrelated"

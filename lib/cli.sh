@@ -273,17 +273,36 @@ cli_result() {
 cli_cleanup() {
   local code=$?
   trap - EXIT
+  if ((${#CLI_TEMP_FILES[@]})); then
+    rm -f -- "${CLI_TEMP_FILES[@]}" || true
+  fi
   if [[ ${CLI_MANAGED} == true ]]; then
     [[ ${code} -eq 0 ]] || code=${CLI_FAILURE_CODE}
     cli_result "${code}"
   fi
-  [[ -z ${TMPFILE:-} ]] || rm -f "${TMPFILE}"
-  [[ -z ${tmppac:-} ]] || rm -f "${tmppac}"
   exit "${code}"
 }
 
 cli_describe() {
   CLI_DATA='{"actions":[{"flag":"--up","effect":"Create or reuse local Kind; deploy core, PAC, and Dashboard"},{"flag":"--install-paac","effect":"Build, deploy, and configure PAC"},{"flag":"--deploy-component","argument":"controller|watcher|webhook","effect":"Build and deploy one PAC component"},{"flag":"--stop-kind","effect":"Delete Kind and its kubeconfig","destructive":true},{"flag":"--doctor","effect":"Inspect setup prerequisites"},{"flag":"--status","effect":"Inspect component readiness and forwarding state"},{"flag":"--describe","effect":"Describe agent interfaces without loading configuration"}],"options":{"--plan":"Read-only preview of a core action","--non-interactive":"No prompts, browser, or implicit service changes","--output":"text|json"},"examples":["startpaac --up --plan --output json","startpaac --up --non-interactive --output json","startpaac -c watcher --non-interactive --output json","startpaac --status --output json"]}'
+}
+
+cli_check_docker_target() {
+  local endpoint
+  if [[ ${KIND_EXPERIMENTAL_PROVIDER:-docker} != docker ]]; then
+    cli_error kind_provider 'Agent workflows require the Docker Kind provider.' 'Select the Docker provider and retry.'
+    return 1
+  fi
+  if ! endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null); then
+    cli_error docker_endpoint_unavailable 'Cannot resolve the active Docker endpoint.' 'Check the Docker context and any endpoint overrides.'
+    return 1
+  fi
+  if [[ ${endpoint} != unix:///?* ]]; then
+    cli_error docker_endpoint_nonlocal 'Agent workflows require Docker to use a local Unix socket.' 'Select a local Docker context and check DOCKER_HOST and DOCKER_CONTEXT.'
+    return 1
+  fi
+  export DOCKER_HOST=${endpoint} KIND_EXPERIMENTAL_PROVIDER=docker
+  unset DOCKER_CONTEXT
 }
 
 cli_preflight() {
@@ -322,7 +341,7 @@ cli_preflight() {
     ;;
   esac
   CLI_CLUSTER_EXISTS=false
-  if command -v docker >/dev/null 2>&1 && command -v kind >/dev/null 2>&1 && [[ ${TARGET_HOST} == local ]]; then
+  if [[ ${TARGET_HOST} == local ]] && command -v docker >/dev/null 2>&1 && cli_check_docker_target && command -v kind >/dev/null 2>&1; then
     local clusters bindings
     if clusters=$(kind get clusters 2>/dev/null); then
       while IFS= read -r cluster; do
@@ -405,7 +424,7 @@ cli_build_plan() {
     --arg scaled "${scale_down_controller}" \
     '. + {steps:$steps,hooks:$hooks,component:$component,pac_dir:$pac_dir,destructive:$destructive,scale_down:($scaled | split(" ") | map(select(length > 0)))}' <<<"${CLI_DATA}")
   if [[ ${CLI_ACTION} == --up ]]; then
-    cli_warning 'Registry setup may restart containerd. User webhook-forwarding services are left unchanged in noninteractive mode.'
+    cli_warning 'Registry setup may restart containerd. Webhook forwarders are left unchanged by --up.'
   fi
 }
 
@@ -448,6 +467,7 @@ cli_read_status() {
 
 cli_execute_core() {
   TMPFILE=$(mktemp /tmp/.startpaac.XXXXXX)
+  CLI_TEMP_FILES+=("${TMPFILE}")
   case ${CLI_ACTION} in
   --up)
     mkdir -p "$(dirname "${KUBECONFIG}")"
@@ -552,6 +572,7 @@ cli_main() {
   exec 3>&1
   [[ ${CLI_OUTPUT} != json ]] || exec 1>&2
   CLI_ERRORS='[]' CLI_WARNINGS='[]' CLI_CHECKS='[]' CLI_DATA='{}' CLI_STEP=initialization CLI_FAILURE_CODE=1
+  CLI_TEMP_FILES=()
   trap cli_cleanup EXIT
   if [[ ${CLI_ACTION} == --describe ]]; then
     cli_describe
@@ -564,12 +585,13 @@ cli_main() {
   [[ -n ${requested_noninteractive} ]] || unset NON_INTERACTIVE
   [[ -n ${requested_ci} ]] || unset CI_MODE
   [[ -n ${requested_menu} ]] || unset FORCE_INTERACTIVE
-  initialize_runtime
-  [[ -z ${requested_noninteractive} ]] || NON_INTERACTIVE=${requested_noninteractive}
-  [[ -z ${requested_ci} ]] || CI_MODE=${requested_ci}
-  [[ -z ${requested_menu} ]] || FORCE_INTERACTIVE=${requested_menu}
+  source "${SP}/lib/config.sh"
+  NON_INTERACTIVE=${requested_noninteractive:-${NON_INTERACTIVE:-false}}
+  CI_MODE=${requested_ci:-${CI_MODE:-false}}
+  FORCE_INTERACTIVE=${requested_menu:-${FORCE_INTERACTIVE:-false}}
   cli_validate
   cli_require_jq
+  initialize_runtime
   if [[ ${CLI_MANAGED} == true ]]; then
     export PASSWORD_STORE_GPG_OPTS="${PASSWORD_STORE_GPG_OPTS:-} --batch --no-tty --pinentry-mode error"
     if [[ ${CLI_ACTION} == --setup-github-app || ${FORCE_INTERACTIVE} == true ]]; then
@@ -598,5 +620,6 @@ cli_main() {
   fi
   [[ ${SETUP_GITHUB_APP_ONLY} == true ]] || check_tools
   TMPFILE=$(mktemp /tmp/.startpaac.XXXXXX)
+  CLI_TEMP_FILES+=("${TMPFILE}")
   execute_action "${CLI_EXTRA[@]}"
 }
