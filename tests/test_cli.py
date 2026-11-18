@@ -62,6 +62,14 @@ elif tool == "kubectl":
                 "certificate-authority-data": "other-CA" if os.environ.get("FAKE_MISMATCH") else "CA"}}],
                 "contexts": [{"name": "kind-kind", "context": {"cluster": "kind-kind", "user": "kind-kind"}}],
                 "users": [{"name": "kind-kind", "user": {}}]}
+            if os.environ.get("FAKE_CA_FILE"):
+                cluster = config["clusters"][0]["cluster"]
+                ca_file = os.environ["FAKE_CA_FILE"]
+                if "--flatten" in args:
+                    cluster["certificate-authority-data"] = (pathlib.Path(os.environ["KUBECONFIG"]).parent / ca_file).read_text()
+                else:
+                    del cluster["certificate-authority-data"]
+                    cluster["certificate-authority"] = ca_file
             if os.environ.get("FAKE_SHARED_KUBECONFIG"):
                 config[os.environ["FAKE_SHARED_KUBECONFIG"]].append({"name": "other"})
             print(json.dumps(config))
@@ -110,7 +118,7 @@ elif tool == "pass":
         sys.exit(1)
     print("https://relay.example/RELAY-SENTINEL" if args[-1].endswith("/smee") else "SECRET-SENTINEL")
 elif tool == "systemctl":
-    sys.exit(1)
+    sys.exit(0 if os.environ.get("FAKE_FORWARDER_RUNNING") and "is-active" in args else 1)
 elif tool == "gum" and args[0] == "confirm":
     sys.exit(1)
 '''
@@ -287,6 +295,20 @@ class AgentCliTest(unittest.TestCase):
         self.assertFalse((self.home / ".kube").exists())
         self.assertEqual(self.mutations(), [])
 
+    def test_text_plan_lists_target_and_effects(self):
+        self.existing_cluster()
+        hook = self.home / ".config/startpaac/hooks/pre-install-pac"
+        hook.parent.mkdir(parents=True)
+        hook.touch(mode=0o755)
+        result = self.run_cli("-c", "watcher", "-O", "controller", "--plan")
+        for detail in ["Target: local / kind", f"Kubeconfig: {self.home / '.kube/config.local'}",
+                       f"PAC checkout: {self.pac}", "Component: watcher", f"Hook: {hook}", "Scale down: controller"]:
+            self.assertIn(detail, result.stdout)
+        result = self.run_cli("--stop-kind", "--plan")
+        self.assertIn("Deletes the Kind cluster and its kubeconfig", result.stdout)
+        self.assertEqual(self.mutations(), [])
+        self.assertTrue(self.state.exists())
+
     def test_explicit_local_target_overrides_remote_configuration(self):
         config = pathlib.Path(self.env["STARTPAC_CONFIG_FILE"])
         config.parent.mkdir(parents=True)
@@ -365,6 +387,17 @@ class AgentCliTest(unittest.TestCase):
                 self.assertEqual(self.state.read_text(), "existing-identity")
                 self.assertEqual(kubeconfig.read_text(), "kind kubeconfig")
                 self.assertFalse(any(cmd[:3] == ["kind", "delete", "cluster"] for cmd in self.commands()))
+
+    def test_preflight_accepts_a_matching_ca_file(self):
+        self.existing_cluster()
+        ca_file = self.home / ".kube/kind-ca.crt"
+        ca_file.write_text("CA")
+        self.env["FAKE_CA_FILE"] = ca_file.name
+        self.run_cli("--stop-kind", "--plan", "--output=json")
+        ca_file.write_text("other-CA")
+        result = self.run_cli("--stop-kind", "--plan", "--output=json", code=1)
+        self.assertIn("kubeconfig_mismatch", [issue["code"] for issue in json.loads(result.stdout)["errors"]])
+        self.assertTrue(self.state.exists())
 
     def test_setup_does_not_overwrite_kubeconfig_when_cluster_is_absent(self):
         self.existing_cluster()
@@ -602,6 +635,18 @@ class AgentCliTest(unittest.TestCase):
         self.assertEqual(unready, ["pipelines-as-code-watcher"])
         self.assertIn("components_not_ready", [error["code"] for error in data["errors"]])
 
+    def test_text_status_reports_registry_and_forwarder_state(self):
+        self.existing_cluster()
+        result = self.run_cli("--status")
+        self.assertIn("Registry: https://registry.127.0.0.1.nip.io (ready)", result.stdout)
+        self.assertIn("Webhook forwarder: unverified", result.stdout)
+
+        self.env.update(FAKE_FAIL_CURL="1", FAKE_FORWARDER_RUNNING="1")
+        result = self.run_cli("--status", code=1)
+        self.assertIn("Registry: https://registry.127.0.0.1.nip.io (unavailable)", result.stdout)
+        self.assertIn("Webhook forwarder: running", result.stdout)
+        self.assertIn("Webhook delivery: unverified", result.stdout)
+
     def configure_pass(self):
         path = self.bin / "pass"
         path.write_text("#!" + sys.executable + "\n" + MOCK)
@@ -623,6 +668,19 @@ class AgentCliTest(unittest.TestCase):
                 (self.base / "pass-count").unlink(missing_ok=True)
                 self.run_cli("-p", "--output=json", code=1)
                 self.assertFalse(any("secret" in cmd for cmd in self.mutations()))
+
+    def test_plain_up_preserves_cluster_credentials_when_access_is_lost(self):
+        self.existing_cluster()
+        credential = self.secrets / "github-private-key"
+        hook = self.home / ".config/startpaac/hooks/pre-configure-pac"
+        hook.parent.mkdir(parents=True)
+        hook.write_text(f'#!/bin/bash\nrm "{credential}"\n')
+        hook.chmod(0o755)
+
+        result = self.run_cli("--up", code=1, env=dict(self.env, NON_INTERACTIVE="false"))
+        self.assertFalse(credential.exists())
+        self.assertIn("existing cluster secrets were left unchanged", result.stdout)
+        self.assertFalse(any("secret" in cmd and "pipelines-as-code-secret" in cmd for cmd in self.mutations()))
 
     def test_registry_timeout_returns_failure(self):
         self.env["FAKE_FAIL_CURL"] = "1"

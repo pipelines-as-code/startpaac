@@ -213,7 +213,7 @@ cli_validate() {
   if [[ ${CLI_PLAN} == true || ${CLI_OUTPUT} == json || ${NON_INTERACTIVE} == true ]]; then
     CLI_MANAGED=true
   fi
-  if [[ ${CLI_OUTPUT} == json ]]; then
+  if [[ ${CLI_OUTPUT} == json || ${CLI_ACTION} == --up ]]; then
     NON_INTERACTIVE=true
     CLI_NON_INTERACTIVE_OVERRIDE=true
   fi
@@ -261,9 +261,25 @@ cli_result() {
       '{schema_version:1,ok:$ok,action:$action,target:{host:$host,cluster:"kind",kubeconfig:$kubeconfig},data:$data,errors:$errors,warnings:$warnings}' >&3
   else
     printf '%s: %s\n' "${CLI_ACTION#--}" "$([[ ${code} == 0 ]] && echo OK || echo FAILED)"
-    jq -r '.checks[]? | "\(.id): \(.message)"' <<<"${CLI_DATA}"
-    jq -r '.steps[]? | "  \(.)"' <<<"${CLI_DATA}"
-    jq -r '.components[]? | "\(.namespace)/\(.name): \(if .ready then "ready" else "not ready" end)"' <<<"${CLI_DATA}"
+    jq -r --arg host "${TARGET_HOST:-local}" --arg kubeconfig "${KUBECONFIG:-}" --argjson plan "${CLI_PLAN}" '
+      (.checks[]? | "\(.id): \(.message)"),
+      (if $plan and has("steps") then
+        "Target: \($host) / kind",
+        "Kubeconfig: \($kubeconfig)",
+        (select(.pac_dir != "") | "PAC checkout: \(.pac_dir)"),
+        (select(.component != "") | "Component: \(.component)"),
+        (select(.destructive) | "Deletes the Kind cluster and its kubeconfig."),
+        (.hooks[] | "Hook: \(.)"),
+        (.scale_down[] | "Scale down: \(.)")
+      else empty end),
+      (.steps[]? | "  \(.)"),
+      (.components[]? | "\(.namespace)/\(.name): \(if .ready then "ready" else "not ready" end)"),
+      (if has("registry_ready") then
+        "Registry: \(.endpoints.registry) (\(if .registry_ready then "ready" else "unavailable" end))",
+        "Webhook forwarder: \(.forwarder)",
+        "Webhook delivery: \(.webhook_delivery)"
+      else empty end)
+    ' <<<"${CLI_DATA}"
     jq -r '.[] | "\(.message) Next: \(.next_step)"' <<<"${CLI_ERRORS}"
     jq -r '.[] | "Warning: \(.)"' <<<"${CLI_WARNINGS}"
     [[ ${CLI_ACTION} != --describe ]] || jq . <<<"${CLI_DATA}"
@@ -382,7 +398,7 @@ cli_check_kubeconfig() {
   command -v kubectl >/dev/null 2>&1 || return 0
   local expected actual
   expected=$(kind get kubeconfig --name kind 2>/dev/null | kubectl --kubeconfig=/dev/stdin --context=kind-kind config view --raw --minify -o 'jsonpath={.clusters[0].cluster.server}|{.clusters[0].cluster.certificate-authority-data}' 2>/dev/null || true)
-  actual=$(kubectl --context=kind-kind config view --raw -o json 2>/dev/null | jq -er '
+  actual=$(kubectl --context=kind-kind config view --raw --flatten -o json 2>/dev/null | jq -er '
     select((.clusters | length) == 1 and (.contexts | length) == 1 and (.users | length) == 1) |
     select(.contexts[0].name == "kind-kind" and
       .contexts[0].context.cluster == .clusters[0].name and .contexts[0].context.user == .users[0].name) |
