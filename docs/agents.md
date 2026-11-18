@@ -130,7 +130,8 @@ and argument validation do not load user configuration. Other inspections load
 the existing trusted shell configuration, but do not generate configuration,
 execute hooks, export kubeconfigs, or change cluster resources.
 
-`--non-interactive` supports the core workflows. JSON execution also enables it.
+`--non-interactive` supports the core workflows. `--up` and JSON execution
+also enable it.
 It disables prompts, browser launches, and implicit changes to webhook-forwarding
 services. Password-store access uses batch mode; unavailable credentials are
 reported rather than triggering pinentry. Output excludes credential values and
