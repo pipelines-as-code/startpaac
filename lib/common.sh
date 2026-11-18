@@ -10,6 +10,10 @@ echo_color() {
   }
   local color=$1
   local text=${2:-}
+  if [[ ${NON_INTERACTIVE:-false} == true ]]; then
+    if [[ ${echo} == -n ]]; then printf '%s' "${text}"; else printf '%s\n' "${text}"; fi
+    return
+  fi
   case ${color} in
   red)
     echo ${echo} -e "\033[31m${text}\033[0m"
@@ -60,6 +64,11 @@ echo_color() {
 }
 
 show_step() {
+  export CLI_STEP=$1
+  if [[ ${NON_INTERACTIVE:-false} == true ]]; then
+    printf '%s\n' "$1"
+    return
+  fi
   text="$1"
   length=$((${#text} + 4))
 
@@ -139,13 +148,12 @@ wait_for_resource() {
   local display_name="${resource_type} ${name}"
 
   echo_color -n brightgreen "Waiting for ${display_name} to be ready in ${namespace}: "
-  local i=0
   local max_wait=300 # seconds
   local interval=2   # seconds
-  local max_retries=$((max_wait / interval))
+  local deadline=$((SECONDS + max_wait))
 
   while true; do
-    if [[ ${i} -ge ${max_retries} ]]; then
+    if (( SECONDS >= deadline )); then
       echo_color brightred " FAILED (timeout after ${max_wait}s)"
       return 1
     fi
@@ -154,11 +162,11 @@ wait_for_resource() {
     case ${resource_type} in
       endpoint|ep)
         local ep
-        ep=$(kubectl get ep -n "${namespace}" "${name}" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
+        ep=$(kubectl --request-timeout=5s get ep -n "${namespace}" "${name}" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
         [[ -n ${ep} ]] && is_ready=1
         ;;
       pod)
-        kubectl wait --for=condition=Ready pods \
+        kubectl --request-timeout=5s wait --for=condition=Ready pods \
           -l "${name}" \
           -n "${namespace}" \
           --timeout=0s \
@@ -166,13 +174,13 @@ wait_for_resource() {
         ;;
       deployment|deploy)
         local desired ready
-        desired=$(kubectl get deployment -n "${namespace}" "${name}" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
-        ready=$(kubectl get deployment -n "${namespace}" "${name}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+        desired=$(kubectl --request-timeout=5s get deployment -n "${namespace}" "${name}" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+        ready=$(kubectl --request-timeout=5s get deployment -n "${namespace}" "${name}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
         [[ -n ${desired} ]] && [[ -n ${ready} ]] && [[ ${desired} -eq ${ready} ]] && [[ ${ready} -gt 0 ]] && is_ready=1
         ;;
       gateway)
-        kubectl wait --for=condition=Accepted gateway/"${name}" -n "${namespace}" --timeout=0s &>/dev/null &&
-          kubectl wait --for=condition=Programmed gateway/"${name}" -n "${namespace}" --timeout=0s &>/dev/null &&
+        kubectl --request-timeout=5s wait --for=condition=Accepted gateway/"${name}" -n "${namespace}" --timeout=0s &>/dev/null &&
+          kubectl --request-timeout=5s wait --for=condition=Programmed gateway/"${name}" -n "${namespace}" --timeout=0s &>/dev/null &&
           is_ready=1
         ;;
       *)
@@ -184,7 +192,6 @@ wait_for_resource() {
     [[ ${is_ready} -eq 1 ]] && break
     sleep ${interval}
     echo_color -n brightwhite "."
-    i=$((i + 1))
   done
 
   echo_color brightgreen " OK"
@@ -199,6 +206,18 @@ wait_for_it() {
 # Backwards compatibility wrapper
 wait_for_deployment() {
   wait_for_resource deployment "$1" "$2"
+}
+
+wait_for_registry() {
+  local url=$1 max_wait=${2:-300}
+  local deadline=$((SECONDS + max_wait))
+  until curl --connect-timeout 5 --max-time 10 -o/dev/null --fail -k -s "${url}"; do
+    if (( SECONDS >= deadline )); then
+      echo "Registry readiness timed out after ${max_wait} seconds" >&2
+      return 1
+    fi
+    sleep 5
+  done
 }
 
 check_tools() {
@@ -257,6 +276,7 @@ is_provider_hostname() {
 
 # Wrapper around gum confirm with bash fallback
 _confirm() {
+  [[ ${NON_INTERACTIVE:-false} != true ]] || return 1
   local prompt="${1:-Confirm?}"
   if command -v gum &>/dev/null; then
     gum confirm "${prompt}"
@@ -270,6 +290,7 @@ _confirm() {
 # Wrapper around gum input with bash fallback
 # Usage: _input "Prompt" "default value"
 _input() {
+  [[ ${NON_INTERACTIVE:-false} != true ]] || return 1
   local prompt="${1:-Value?}"
   local default="${2:-}"
   if command -v gum &>/dev/null; then
@@ -351,6 +372,7 @@ get_smee_url() {
 # Wrapper around gum choose --no-limit with bash fallback
 # Usage: echo "items" | _choose_multi [--selected="item1,item2"]
 _choose_multi() {
+  [[ ${NON_INTERACTIVE:-false} != true ]] || return 1
   local preselected=""
   for arg in "$@"; do
     case "${arg}" in
@@ -478,6 +500,10 @@ print_gosmee_manual_command() {
 # back to printing the manual command everywhere else.
 # Usage: start_gosmee_forwarder <service-name> <smee-url> <target-url>
 start_gosmee_forwarder() {
+  if [[ ${NON_INTERACTIVE:-false} == true ]]; then
+    echo 'Webhook forwarding services are unchanged; run --start-user-gosmee separately if needed.'
+    return 0
+  fi
   local service=${1:-gosmee} smeeurl=${2:-} targeturl=${3:-}
   # A target like "https://" (unset PAC/TARGET_HOST) has no host component and
   # would install a permanently failing, auto-restarting service.
@@ -757,6 +783,9 @@ run_with_hooks() {
     local hook_name="$1"
     shift
     run_hook "pre-${hook_name}" || return $?
-    "$@" || return $?
+    # An OR-list here disables errexit inside installer functions.
+    "$@"
+    local status=$?
+    [[ ${status} -eq 0 ]] || return "${status}"
     run_hook "post-${hook_name}"
 }

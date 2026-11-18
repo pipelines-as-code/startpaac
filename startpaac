@@ -1,116 +1,112 @@
 #!/usr/bin/env bash
 # Copyright 2024 Chmouel Boudjnah <chmouel@chmouel.com>
 # shellcheck disable=SC2046,SC1091
-set -eufo pipefail
+set -Eeufo pipefail
 
-scale_down_controller=""
-
-SETUP_GITHUB_APP_ONLY=false
-for arg in "$@"; do
-  [[ ${arg} == --setup-github-app ]] && SETUP_GITHUB_APP_ONLY=true
+Miself=${BASH_SOURCE[0]}
+[[ ${Miself} == */* ]] || Miself=./${Miself}
+while [[ -L ${Miself} ]]; do
+  _dir=$(cd -P -- "${Miself%/*}" && pwd)
+  Miself=$(readlink "${Miself}")
+  [[ ${Miself} == /* ]] || Miself=${_dir}/${Miself}
 done
-export SETUP_GITHUB_APP_ONLY
-
-Miself=$(readlink -f "$0")
-SP=$(dirname "${Miself}")
+SP=$(cd -P -- "${Miself%/*}" && pwd)
+Miself=${SP}/${Miself##*/}
 source "${SP}/lib/common.sh"
-source "${SP}/lib/config.sh"
+source "${SP}/lib/cli.sh"
 
-PAC_CONTROLLER_TARGET_NS=pipelines-as-code
-_git_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
-if [[ ${SETUP_GITHUB_APP_ONLY} == true ]]; then
-  :
-elif [[ -d ${_git_root}/config ]]; then
-  PAC_DIR=${_git_root}
-else
-  [[ -z ${PAC_DIR:-""} ]] && {
-    echo "You really need to set the PAC_DIR variable in your ${CONFIG_FILE}"
+initialize_runtime() {
+  source "${SP}/lib/config.sh"
+  [[ ${CLI_LOCAL_TARGET} != true ]] || TARGET_HOST=local
+  PAC_CONTROLLER_TARGET_NS=pipelines-as-code
+  _git_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+  if [[ ${SETUP_GITHUB_APP_ONLY} != true ]]; then
+    if [[ -z ${PAC_DIR:-} && -f ${_git_root}/config/400-controller.yaml ]]; then
+      PAC_DIR=${_git_root}
+    fi
+    if [[ ${CLI_MANAGED} != true ]]; then
+      [[ -n ${PAC_DIR:-} ]] || {
+        echo "You really need to set the PAC_DIR variable in your ${CONFIG_FILE}"
+        exit 1
+      }
+      cd "${PAC_DIR}" || {
+        echo "cannot find the pipelines-as-code directory, set PAC_DIR in ${CONFIG_FILE}"
+        exit 1
+      }
+    fi
+  fi
+
+  TARGET_HOST=${TARGET_HOST:-local}
+  DOMAIN_NAME=${DOMAIN_NAME:-""}
+  PAC_DOMAIN=${PAC_DOMAIN:-""}
+  PAC=${PAC:-""}
+  REGISTRY=${REGISTRY:-""}
+  KO_EXTRA_FLAGS=${KO_EXTRA_FLAGS:-""}
+  FORGE_HOST=${FORGE_HOST:-""}
+  INSTALL_GITHUB_SECOND_CTRL=${INSTALL_GITHUB_SECOND_CTRL:-""}
+  INSTALL_FORGE=${INSTALL_FORGE:-"true"}
+  PAC_PASS_SECOND_FOLDER=${PAC_PASS_SECOND_FOLDER:-}
+  PAC_GITHUB_SECOND_HOSTNAME=${PAC_GITHUB_SECOND_HOSTNAME:-${TEST_GITHUB_SECOND_API_URL:-}}
+  PAC_DEBUG_IMAGE=${PAC_DEBUG_IMAGE:-registry.access.redhat.com/ubi9/ubi-minimal}
+  PAC_IMAGE_NONROOT=${PAC_IMAGE_NONROOT:-"true"}
+  GOSMEE_LOG_LEVEL=${GOSMEE_LOG_LEVEL:-debug}
+  GOSMEE_TARGET_TIMEOUT=${GOSMEE_TARGET_TIMEOUT:-5}
+  GOSMEE_TARGET_RETRIES=${GOSMEE_TARGET_RETRIES:-5}
+
+  # Component installation preferences
+  PREFERENCES_FILE="${HOME}/.config/startpaac/preferences.json"
+  INSTALL_PAC=${INSTALL_PAC:-"true"}
+  INSTALL_TEKTON_TRIGGERS=${INSTALL_TEKTON_TRIGGERS:-"false"}
+  INSTALL_TEKTON_CHAINS=${INSTALL_TEKTON_CHAINS:-"false"}
+  INSTALL_TEKTON_DASHBOARD=${INSTALL_TEKTON_DASHBOARD:-"true"}
+  INSTALL_POSTGRESQL=${INSTALL_POSTGRESQL:-"false"}
+  INSTALL_CUSTOM_OBJECT_ENABLED=${INSTALL_CUSTOM_OBJECT_ENABLED:-"false"}
+  FORCE_INTERACTIVE=${FORCE_INTERACTIVE:-"false"}
+  NON_INTERACTIVE=${NON_INTERACTIVE:-"false"}
+
+  # CI mode settings
+  CI_MODE=${CI_MODE:-"false"}
+  export CI_MODE
+
+  if [[ ${TARGET_HOST} == local ]]; then
+    KO_EXTRA_FLAGS=(--insecure-registry)
+    DOMAIN_NAME=${TARGET_HOST}
+    # Allow domain override via PAC_DOMAIN for CI compatibility
+    PAC_DOMAIN=${PAC_DOMAIN:-"127.0.0.1.nip.io"}
+    REGISTRY=registry.${PAC_DOMAIN}
+    FORGE_HOST=gitea.${PAC_DOMAIN}
+    TARGET_BIND_IP=127.0.0.1
+    DASHBOARD=dashboard.${PAC_DOMAIN}
+    PAC=paac.${PAC_DOMAIN}
+    # Default to NodePort webhook for local mode
+    USE_NODEPORT_WEBHOOK=${USE_NODEPORT_WEBHOOK:-true}
+  else
+    USE_NODEPORT_WEBHOOK=${USE_NODEPORT_WEBHOOK:-false}
+  fi
+
+  # NodePort configuration for direct webhook delivery
+  PAC_WEBHOOK_NODEPORT=${PAC_WEBHOOK_NODEPORT:-30080}
+  if [[ "${USE_NODEPORT_WEBHOOK}" == "true" ]]; then
+    PAC_WEB_URL=${PAC_WEB_URL:-"http://${TARGET_BIND_IP:-127.0.0.1}:${PAC_WEBHOOK_NODEPORT}"}
+  else
+    PAC_WEB_URL=${PAC_WEB_URL:-"https://${PAC}"}
+  fi
+  PAC_WEBHOOK_SECRET=${PAC_WEBHOOK_SECRET:-""}
+
+  [[ ${CLI_MANAGED} != true && ${SETUP_GITHUB_APP_ONLY} != true && (-z ${DOMAIN_NAME} || -z ${TARGET_HOST} || -z ${TARGET_BIND_IP:-} || -z ${REGISTRY} || -z ${DASHBOARD:-} || -z ${PAC}) ]] && {
+    echo "Need to set DOMAIN_NAME, TARGET_HOST, TARGET_BIND_IP, REGISTRY, DASHBOARD and PAC in your $HOME/.config/startpaac/config"
     exit 1
   }
+  [[ -n ${DOMAIN_NAME} && -z ${PAC_DOMAIN} ]] && PAC_DOMAIN=${DOMAIN_NAME}
 
-  cd "${PAC_DIR:-}" || {
-    echo "cannot find the pipelines-as-code directory, set the PAC_DIR variable to where you have checked out the github.com/tektoncd/pipelines-as-code repository in your ${HOME}/.config/startpaac/config"
+  export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config.${DOMAIN_NAME%%.*}}
+
+  if [[ ${CLI_MANAGED} != true && ${SETUP_GITHUB_APP_ONLY} != true ]] && { [[ -z ${TARGET_HOST} ]] || [[ -z ${DOMAIN_NAME} ]] || [[ -z ${REGISTRY} ]] || [[ -z ${KUBECONFIG} ]]; }; then
+    echo "Need env variable TARGET_HOST, DOMAIN_NAME and REGISTRY"
     exit 1
-  }
-fi
+  fi
 
-# Note: check_tools() is called later after argument parsing to respect CI_MODE flag
-
-[[ -n "$*" && "${*}" == *\ local ]] && TARGET_HOST=local
-
-TARGET_HOST=${TARGET_HOST:-}
-DOMAIN_NAME=${DOMAIN_NAME:-""}
-PAC_DOMAIN=${PAC_DOMAIN:-""}
-PAC=${PAC:-""}
-REGISTRY=${REGISTRY:-""}
-KO_EXTRA_FLAGS=${KO_EXTRA_FLAGS:-""}
-FORGE_HOST=${FORGE_HOST:-""}
-INSTALL_GITHUB_SECOND_CTRL=${INSTALL_GITHUB_SECOND_CTRL:-""}
-INSTALL_FORGE=${INSTALL_FORGE:-"true"}
-PAC_PASS_SECOND_FOLDER=${PAC_PASS_SECOND_FOLDER:-}
-PAC_GITHUB_SECOND_HOSTNAME=${PAC_GITHUB_SECOND_HOSTNAME:-${TEST_GITHUB_SECOND_API_URL:-}}
-PAC_DEBUG_IMAGE=${PAC_DEBUG_IMAGE:-registry.access.redhat.com/ubi9/ubi-minimal}
-PAC_IMAGE_NONROOT=${PAC_IMAGE_NONROOT:-"true"}
-GOSMEE_LOG_LEVEL=${GOSMEE_LOG_LEVEL:-debug}
-GOSMEE_TARGET_TIMEOUT=${GOSMEE_TARGET_TIMEOUT:-5}
-GOSMEE_TARGET_RETRIES=${GOSMEE_TARGET_RETRIES:-5}
-
-# Component installation preferences
-PREFERENCES_FILE="${HOME}/.config/startpaac/preferences.json"
-INSTALL_PAC=${INSTALL_PAC:-"true"}
-INSTALL_TEKTON_TRIGGERS=${INSTALL_TEKTON_TRIGGERS:-"false"}
-INSTALL_TEKTON_CHAINS=${INSTALL_TEKTON_CHAINS:-"false"}
-INSTALL_TEKTON_DASHBOARD=${INSTALL_TEKTON_DASHBOARD:-"true"}
-INSTALL_POSTGRESQL=${INSTALL_POSTGRESQL:-"false"}
-INSTALL_CUSTOM_OBJECT_ENABLED=${INSTALL_CUSTOM_OBJECT_ENABLED:-"false"}
-FORCE_INTERACTIVE=${FORCE_INTERACTIVE:-"false"}
-
-# CI mode settings
-CI_MODE=${CI_MODE:-"false"}
-export CI_MODE
-
-if [[ ${TARGET_HOST} == local ]]; then
-  KO_EXTRA_FLAGS=(--insecure-registry)
-  DOMAIN_NAME=${TARGET_HOST}
-  # Allow domain override via PAC_DOMAIN for CI compatibility
-  PAC_DOMAIN=${PAC_DOMAIN:-"127.0.0.1.nip.io"}
-  REGISTRY=registry.${PAC_DOMAIN}
-  FORGE_HOST=gitea.${PAC_DOMAIN}
-  TARGET_BIND_IP=127.0.0.1
-  DASHBOARD=dashboard.${PAC_DOMAIN}
-  PAC=paac.${PAC_DOMAIN}
-  # Default to NodePort webhook for local mode
-  USE_NODEPORT_WEBHOOK=${USE_NODEPORT_WEBHOOK:-true}
-else
-  USE_NODEPORT_WEBHOOK=${USE_NODEPORT_WEBHOOK:-false}
-fi
-
-# NodePort configuration for direct webhook delivery
-PAC_WEBHOOK_NODEPORT=${PAC_WEBHOOK_NODEPORT:-30080}
-if [[ "${USE_NODEPORT_WEBHOOK}" == "true" ]]; then
-  PAC_WEB_URL=${PAC_WEB_URL:-"http://${TARGET_BIND_IP:-127.0.0.1}:${PAC_WEBHOOK_NODEPORT}"}
-else
-  PAC_WEB_URL=${PAC_WEB_URL:-"https://${PAC}"}
-fi
-PAC_WEBHOOK_SECRET=${PAC_WEBHOOK_SECRET:-""}
-
-[[ ${SETUP_GITHUB_APP_ONLY} != true && (-z ${DOMAIN_NAME} || -z ${TARGET_HOST} || -z ${TARGET_BIND_IP:-} || -z ${REGISTRY} || -z ${DASHBOARD:-} || -z ${PAC}) ]] && {
-  echo "Need to set DOMAIN_NAME, TARGET_HOST, TARGET_BIND_IP, REGISTRY, DASHBOARD and PAC in your $HOME/.config/startpaac/config"
-  exit 1
 }
-[[ -n ${DOMAIN_NAME} && -z ${PAC_DOMAIN} ]] && PAC_DOMAIN=${DOMAIN_NAME}
-
-TMPFILE=$(mktemp /tmp/.startpaac.XXXXXX)
-# shellcheck disable=SC2317
-clean() { rm -f "${TMPFILE}"; }
-trap clean EXIT
-
-export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config.${DOMAIN_NAME%%.*}}
-
-if [[ ${SETUP_GITHUB_APP_ONLY} != true ]] && { [[ -z ${TARGET_HOST} ]] || [[ -z ${DOMAIN_NAME} ]] || [[ -z ${REGISTRY} ]] || [[ -z ${KUBECONFIG} ]]; }; then
-  echo "Need env variable TARGET_HOST, DOMAIN_NAME and REGISTRY"
-  exit 1
-fi
 
 show_config() {
   local smee_url protocol
@@ -153,7 +149,7 @@ cache_yaml_file() {
   fi
 
   if [[ ! -e "${filename}" ]]; then
-    curl --fail --progress-bar -L --location --retry 10 --retry-max-time 10 -o "${filename}.tmp" "${url}" &&
+    curl --fail --connect-timeout 10 --max-time 120 --progress-bar -L --location --retry 10 --retry-max-time 10 -o "${filename}.tmp" "${url}" &&
       mv "${filename}.tmp" "${filename}"
   fi
   echo "${filename}"
@@ -169,7 +165,9 @@ check_kind() {
 
 install_kind() {
   [[ "${TARGET_HOST}" != local ]] && check_kind
-  run_with_hooks stop-kind stop_kind
+  if [[ ${CLI_ACTION:-} != --up ]]; then
+    run_with_hooks stop-kind stop_kind
+  fi
   show_step "Creating kind cluster"
   local kfilename="${SP}/lib/kind/kind.yaml"
 
@@ -336,9 +334,6 @@ stop_kind() {
 
 install_pac() {
   tmppac=$(mktemp /tmp/.pac.config.XXXXXX)
-  # shellcheck disable=SC2317
-  __clean() { rm -f "${tmppac}"; }
-  trap __clean EXIT
 
   if [[ -n ${1:-""} ]]; then
     show_step "Deploying PAC $1"
@@ -357,8 +352,10 @@ install_pac() {
     c=${c}/600-webhook.yaml
     ;;
   esac
-  extras=()
-  [[ -e "${PAC_DIR}/pkg/test/nonoai/deployment.yaml" ]] && extras+=(-f "${PAC_DIR}/pkg/test/nonoai/deployment.yaml")
+  local -a extras=()
+  if [[ -z ${1:-} && -e ${PAC_DIR}/pkg/test/nonoai/deployment.yaml ]]; then
+    extras+=(-f "${PAC_DIR}/pkg/test/nonoai/deployment.yaml")
+  fi
 
   require_tool ko
 
@@ -366,7 +363,7 @@ install_pac() {
   echo "Verifying registry ${REGISTRY} is accessible..."
   local reg_ok=false
   for ((i = 1; i <= 5; i++)); do
-    if curl -o/dev/null --fail -k -s "https://${REGISTRY}/v2/"; then
+    if curl --connect-timeout 5 --max-time 10 -o/dev/null --fail -k -s "https://${REGISTRY}/v2/"; then
       reg_ok=true
       break
     fi
@@ -405,27 +402,32 @@ install_pac() {
   done
 }
 
-create_pac_secret() {
-  folder=$1
-  shift
-  secret_name=$1
-  shift
-  target_ns=${1}
-  shift
-  read -r -a read_method <<<"$@"
-
-  kubectl delete secret "${secret_name}" -n "${target_ns}" 2>/dev/null || true
-  kubectl create secret generic "${secret_name}" -n "${target_ns}"
+create_pac_secret() (
+  local folder=$1 secret_name=$2 target_ns=$3 secret_tmp passk value
+  shift 3
+  local -a read_method=("$@")
+  umask 077
+  secret_tmp=$(mktemp -d /tmp/.startpaac-secret.XXXXXX)
+  trap 'rm -rf "${secret_tmp}"' EXIT
   for passk in github-application-id github-private-key webhook.secret; do
-    if [[ ${passk} == *-key ]]; then
-      b64d=$("${read_method[@]}" "${folder}/${passk}" | base64 -w0)
-    else
-      b64d=$(echo -n "$("${read_method[@]}" "${folder}/${passk}")" | base64 -w0)
+    if ! "${read_method[@]}" "${folder}/${passk}" >"${secret_tmp}/${passk}" 2>/dev/null || [[ ! -s ${secret_tmp}/${passk} ]]; then
+      echo 'Cannot read PAC credentials; existing cluster secrets were left unchanged.' >&2
+      return 1
     fi
-    kubectl patch secret -n "${target_ns}" -p "{\"data\":{\"${passk}\": \"${b64d}\"}}" \
-      --type merge "${secret_name}" >/dev/null
+    if [[ ${passk} != github-private-key ]]; then
+      value=$(<"${secret_tmp}/${passk}")
+      printf '%s' "${value}" >"${secret_tmp}/${passk}"
+    fi
   done
-}
+  if ! kubectl create secret generic "${secret_name}" -n "${target_ns}" \
+    --from-file="github-application-id=${secret_tmp}/github-application-id" \
+    --from-file="github-private-key=${secret_tmp}/github-private-key" \
+    --from-file="webhook.secret=${secret_tmp}/webhook.secret" \
+    --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - 2>/dev/null; then
+    echo 'Cannot apply PAC credentials.' >&2
+    return 1
+  fi
+)
 
 patch_configmap() {
   local target_ns=${1:-pipelines-as-code}
@@ -577,6 +579,7 @@ setup_github_app() {
 # Offer the guided GitHub App setup when credentials are missing, but only
 # in interactive (non-CI, tty) runs.
 maybe_setup_github_app() {
+  [[ ${NON_INTERACTIVE:-false} != true ]] || return 0
   [[ ${CI_MODE} == "true" ]] && return 0
   [[ -t 0 && -t 1 ]] || return 0
   pac_secrets_complete && return 0
@@ -594,6 +597,10 @@ maybe_setup_github_app() {
 
 configure_pac() {
   local pac_controller_secret=pipelines-as-code-secret no_ingress="" credential_storage=""
+  if [[ ${NON_INTERACTIVE:-false} == true ]] && ! pac_secrets_complete; then
+    cli_error credentials_unavailable 'GitHub App credentials are unavailable; existing cluster secrets were left unchanged.' 'Restore credential access before retrying.'
+    return 1
+  fi
   show_step "Configuring PAC"
   [[ -n ${1:-} && ${1} == "--no-ingress" ]] && no_ingress=yes
   maybe_setup_github_app
@@ -610,6 +617,10 @@ configure_pac() {
     echo "Installing PAC secrets from plain text folder: ${PAC_SECRET_FOLDER}"
     create_pac_secret "${PAC_SECRET_FOLDER}" "${pac_controller_secret}" "${PAC_CONTROLLER_TARGET_NS}" cat
   else
+    if [[ ${NON_INTERACTIVE:-false} == true ]]; then
+      cli_error credentials_unavailable 'GitHub App credentials became unavailable; existing cluster secrets were left unchanged.' 'Restore credential access before retrying.'
+      return 1
+    fi
     cat <<EOF
   **No secret has been installed**
 
@@ -761,6 +772,10 @@ function sync_kubeconfig() {
 }
 
 function start_user_gosmee() {
+  if [[ ${NON_INTERACTIVE:-false} == true ]]; then
+    echo 'Webhook forwarding services are unchanged; run --start-user-gosmee separately if needed.'
+    return 0
+  fi
   local service=${1:-"gosmee"}
   local smeeurl=${2:-}
   local targeturl=${3:-}
@@ -906,7 +921,7 @@ all() {
   [[ -n ${INSTALL_CUSTOM_OBJECT:-} && ${INSTALL_CUSTOM_OBJECT_ENABLED} == "true" ]] && run_with_hooks install-custom-objects install_custom_objects
 
   # In CI mode, auto-enable second controller if secrets are present
-  if [[ ${CI_MODE} == "true" ]] && [[ -n ${PAC_SECOND_SECRET_FOLDER:-} ]] && [[ -e ${PAC_SECOND_SECRET_FOLDER}/github-application-id ]]; then
+  if [[ ${CI_MODE} == "true" && ${CLI_ACTION:-} != --up ]] && [[ -n ${PAC_SECOND_SECRET_FOLDER:-} ]] && [[ -e ${PAC_SECOND_SECRET_FOLDER}/github-application-id ]]; then
     INSTALL_GITHUB_SECOND_CTRL=true
   fi
   [[ ${INSTALL_GITHUB_SECOND_CTRL} == "false" || ${INSTALL_GITHUB_SECOND_CTRL} == "" ]] || run_with_hooks install-github-second-ctrl install_github_second_ctrl
@@ -919,19 +934,6 @@ all() {
   set_namespace pipelines-as-code
 
   run_hook post-all
-}
-
-function help() {
-  # Define color variables
-  local NO_COLOR='\033[0m'
-  local BOLD='\033[1m'
-
-  echo -e "${BOLD}program.sh [options]${NO_COLOR}
-    "
-  grep -E '^\s*-.*\)\s*#' "$Miself" | sed -e 's/^[ ]*//' -e "s/\(.*\)) # /\1 @ /" | column -t -s $'@'
-  echo -e "
-${BOLD}Author: Chmouel Boudjnah <chmouel@chmouel.com>${NO_COLOR}
-    "
 }
 
 # Load preferences from JSON file
@@ -1105,256 +1107,175 @@ show_selected_components() {
   echo ""
 }
 
-function parse_args() {
-  # Pre-parse for --ci to set flag before check_tools()
-  for arg in "$@"; do
-    case "$arg" in
-    --ci) CI_MODE="true" ;;
-    esac
-  done
-
-  # Now check tools with correct CI_MODE value
-  if [[ ${SETUP_GITHUB_APP_ONLY} != true ]] && ! check_tools; then
-    exit 1
-  fi
-
-  # use getopt to parse arguments
-  args=$(getopt \
-    -o O:HASGsakhgc:ptFiR \
-    --long \
-    "all,
-    show-config,
-    all-but-kind,
-    all-github-second-no-forgejo,
-    all-to-tekton,
-    configure-pac,
-    deploy-component:,
-    github-second-ctrl,
-    help,
-    install-dashboard,
-    install-forgejo,
-    install-gateway,
-    install-paac,
-    install-postgresql,
-    install-registry,
-    install-tekton,
-    install-triggers,
-    install-chains,
-    stop-kind,
-    redeploy-kind,
-    second-secret:,
-    setup-github-app,
-    start-user-gosmee,
-    debug-image,
-    configure-pac-target,
-    all-but-forge,
-    sync-kubeconfig,
-    scale-down:,
-    menu,
-    interactive,
-    reset-preferences,
-    ci,
-    setup-forgejo-sample,
-    kind
-    " -- "$@")
-  #shellcheck disable=SC2181
-  if [ $? -ne 0 ]; then
-    exit 1
-  fi
-  eval set -- "$args"
-  while true; do
-    case "$1" in
-    -O | --scale-down) # scale down the controller
-      scale_down_controller+=" $2"
-      shift
-      ;;
-    -g | --install-forgejo) # Install Forgejo
-      run_with_hooks install-forgejo install_forgejo ${FORGE_HOST}
-      run_with_hooks setup-forgejo-sample setup_forgejo_sample
-      exit
-      ;;
-    -s | --sync-kubeconfig) # Sync kubeconfig
-      run_with_hooks sync-kubeconfig sync_kubeconfig
-      exit
-      ;;
-    -S | --github-second-ctrl) # Deploy second controller for github
-      run_with_hooks install-github-second-ctrl install_github_second_ctrl
-      exit
-      ;;
-    -H | --all-github-second-no-forgejo) # Install everything but forgejo
-      INSTALL_FORGE=false
-      install_kind
-      all
-      run_with_hooks install-github-second-ctrl install_github_second_ctrl
-      show_config
-      exit
-      ;;
-    -G | --start-user-gosmee) # Start gosmee locally for user $USER
-      start_user_gosmee gosmee
-      exit
-      ;;
-    -F | --all-but-forge) # Everything but forgejo
-      INSTALL_FORGE=false
-      all
-      exit
-      ;;
-    -t | --install-tekton) # Install Tekton
-      run_with_hooks install-tekton install_tekton
-      exit
-      ;;
-    -a | --all) # Install everything
-      install_kind
-      all
-      show_config
-      exit
-      ;;
-    -A | --all-but-kind) # Install everything but kind
-      all
-      exit
-      ;;
-    -c | --deploy-component) # Install a specific component
-      run_with_hooks install-pac install_pac "$2"
-      shift
-      exit
-      ;;
-    -p | --install-paac) # Deploy and configure PAC
-      run_with_hooks install-pac install_pac
-      run_with_hooks configure-pac configure_pac
-      run_with_hooks configure-pac-custom-certs configure_pac_custom_certs
-      run_with_hooks patch-pac-service-nodeport patch_pac_service_nodeport
-      exit
-      ;;
-    -k | --kind) # Install Kind
-      install_kind
-      run_with_hooks sync-kubeconfig sync_kubeconfig
-      exit
-      ;;
-    -i | --menu | --interactive) # Force interactive component selection menu
-      FORCE_INTERACTIVE="true"
-      ;;
-    -R | --reset-preferences) # Reset saved component preferences
-      reset_preferences
-      exit 0
-      ;;
-    -h | --help) # Show help
-      help
-      exit 0
-      ;;
-    --setup-forgejo-sample) # Setup sample Forgejo user and repo
-      run_with_hooks setup-forgejo-sample setup_forgejo_sample
-      exit
-      ;;
-    --debug-image) # use a debug image to apply KO images
-      show_step "Using debug image:  ${PAC_DEBUG_IMAGE}"
-      export KO_DEFAULTBASEIMAGE=${PAC_DEBUG_IMAGE}
-      PAC_IMAGE_NONROOT=false
-      run_with_hooks install-pac install_pac
-      echo
-      echo "You can oc rsh to controller (or watcher, webhook) with:"
-      echo "kubectl exec -it deployment/pipelines-as-code-controller -- bash"
-      exit
-      ;;
-    --second-secret) # Set the secret for the second controller
-      PAC_PASS_SECOND_FOLDER=$2
-      shift
-      run_with_hooks install-github-second-ctrl install_github_second_ctrl
-      exit
-      ;;
-    --show-config) # Show configuration
-      show_config
-      exit
-      ;;
-    --setup-github-app) # Create a GitHub App with the manifest flow and store its credentials
-      setup_github_app
-      exit
-      ;;
-    --install-registry) # Install docker registry
-      run_with_hooks install-registry install_registry
-      exit
-      ;;
-    --install-postgresql) # Install PostgreSQL
-      run_with_hooks install-postgresql install_postgresql
-      exit
-      ;;
-    --install-dashboard) # Install Tekton dashboard
-      run_with_hooks install-dashboard install_dashboard
-      exit
-      ;;
-    --install-triggers) # Install Tekton triggers
-      run_with_hooks install-triggers install_triggers
-      exit
-      ;;
-    --install-chains) # Install Tekton chains
-      run_with_hooks install-chains install_chains
-      exit
-      ;;
-    --install-gateway) # Install Envoy Gateway
-      run_with_hooks install-gateway install_gateway
-      exit
-      ;;
-    --all-to-tekton) # Install everything up to Tekton
-      install_kind
-      run_with_hooks sync-kubeconfig sync_kubeconfig
-      run_with_hooks install-gateway install_gateway
-      run_with_hooks install-registry install_registry
-      run_with_hooks install-tekton install_tekton
-      show_config
-      exit
-      ;;
-    --configure-pac) # Configure PAC
-      run_with_hooks configure-pac configure_pac
-      exit
-      ;;
-    --configure-pac-target) # Configure PAC to a target, this won't configure a ingress
-      # example: startpaac --configure-pac-target $KUBECONFIG openshift-pipelines /tmp/pac-secret
-      export KUBECONFIG=$3
-      export PAC_CONTROLLER_TARGET_NS=$4
-      if [[ -d ~/.password-store/$5 ]]; then
-        export PAC_PASS_SECRET_FOLDER=$5
-        smee_url=$(pass show ${PAC_PASS_SECRET_FOLDER}/smee)
-      elif [[ -d $5 ]]; then
-        export PAC_SECRET_FOLDER=$5
-        smee_url=$(cat ${PAC_SECRET_FOLDER}/smee)
-      else
-        echo "Cannot find $5 folder or ~/.password-store/$5 folder"
-        exit 1
-      fi
-      run_with_hooks configure-pac configure_pac --no-ingress
-      if [[ "${USE_NODEPORT_WEBHOOK}" != "true" ]]; then
-        show_step "Creating gosmee service in namespace gosmee"
-        makeGosmee gosmee ${smee_url} http://pipelines-as-code-controller.$PAC_CONTROLLER_TARGET_NS.svc.cluster.local:8080 gosmee
-      else
-        run_with_hooks patch-pac-service-nodeport patch_pac_service_nodeport
-        echo "NodePort webhook enabled, skipping gosmee deployment"
-      fi
-      exit
-      ;;
-    --stop-kind) # Stop Kind
-      run_with_hooks stop-kind stop_kind
-      exit
-      ;;
-    --redeploy-kind) # Redeploy Kind
-      run_with_hooks stop-kind stop_kind
-      install_kind
-      run_with_hooks sync-kubeconfig sync_kubeconfig
-      exit
-      ;;
-    --ci) # Non-interactive CI mode (skips gum, uses TLS with minica)
-      CI_MODE="true"
-      FORCE_INTERACTIVE="false"
-      ;;
-    --)
-      shift
-      break
-      ;;
-    *)
-      echo "Not implemented"
-      help
+execute_action() {
+  case ${CLI_ACTION} in
+  --install-forgejo)
+    run_with_hooks install-forgejo install_forgejo ${FORGE_HOST}
+    run_with_hooks setup-forgejo-sample setup_forgejo_sample
+    exit
+    ;;
+  --sync-kubeconfig)
+    run_with_hooks sync-kubeconfig sync_kubeconfig
+    exit
+    ;;
+  --github-second-ctrl)
+    run_with_hooks install-github-second-ctrl install_github_second_ctrl
+    exit
+    ;;
+  --all-github-second-no-forgejo)
+    INSTALL_FORGE=false
+    install_kind
+    all
+    run_with_hooks install-github-second-ctrl install_github_second_ctrl
+    show_config
+    exit
+    ;;
+  --start-user-gosmee)
+    start_user_gosmee gosmee
+    exit
+    ;;
+  --all-but-forge)
+    INSTALL_FORGE=false
+    all
+    exit
+    ;;
+  --install-tekton)
+    run_with_hooks install-tekton install_tekton
+    exit
+    ;;
+  --all)
+    install_kind
+    all
+    show_config
+    exit
+    ;;
+  --all-but-kind)
+    all
+    exit
+    ;;
+  --deploy-component)
+    run_with_hooks install-pac install_pac "${CLI_VALUE}"
+    exit
+    ;;
+  --install-paac)
+    run_with_hooks install-pac install_pac
+    run_with_hooks configure-pac configure_pac
+    run_with_hooks configure-pac-custom-certs configure_pac_custom_certs
+    run_with_hooks patch-pac-service-nodeport patch_pac_service_nodeport
+    exit
+    ;;
+  --kind)
+    install_kind
+    run_with_hooks sync-kubeconfig sync_kubeconfig
+    exit
+    ;;
+  --reset-preferences)
+    reset_preferences
+    exit 0
+    ;;
+  --setup-forgejo-sample)
+    run_with_hooks setup-forgejo-sample setup_forgejo_sample
+    exit
+    ;;
+  --debug-image)
+    show_step "Using debug image:  ${PAC_DEBUG_IMAGE}"
+    export KO_DEFAULTBASEIMAGE=${PAC_DEBUG_IMAGE}
+    PAC_IMAGE_NONROOT=false
+    run_with_hooks install-pac install_pac
+    echo
+    echo "You can oc rsh to controller (or watcher, webhook) with:"
+    echo "kubectl exec -it deployment/pipelines-as-code-controller -- bash"
+    exit
+    ;;
+  --second-secret)
+    PAC_PASS_SECOND_FOLDER=${CLI_VALUE}
+    run_with_hooks install-github-second-ctrl install_github_second_ctrl
+    exit
+    ;;
+  --show-config)
+    show_config
+    exit
+    ;;
+  --setup-github-app)
+    setup_github_app
+    exit
+    ;;
+  --install-registry)
+    run_with_hooks install-registry install_registry
+    exit
+    ;;
+  --install-postgresql)
+    run_with_hooks install-postgresql install_postgresql
+    exit
+    ;;
+  --install-dashboard)
+    run_with_hooks install-dashboard install_dashboard
+    exit
+    ;;
+  --install-triggers)
+    run_with_hooks install-triggers install_triggers
+    exit
+    ;;
+  --install-chains)
+    run_with_hooks install-chains install_chains
+    exit
+    ;;
+  --install-gateway)
+    run_with_hooks install-gateway install_gateway
+    exit
+    ;;
+  --all-to-tekton)
+    install_kind
+    run_with_hooks sync-kubeconfig sync_kubeconfig
+    run_with_hooks install-gateway install_gateway
+    run_with_hooks install-registry install_registry
+    run_with_hooks install-tekton install_tekton
+    show_config
+    exit
+    ;;
+  --configure-pac)
+    run_with_hooks configure-pac configure_pac
+    exit
+    ;;
+  --configure-pac-target)
+    export KUBECONFIG=$1
+    export PAC_CONTROLLER_TARGET_NS=$2
+    if [[ -d ~/.password-store/$3 ]]; then
+      export PAC_PASS_SECRET_FOLDER=$3
+      smee_url=$(pass show ${PAC_PASS_SECRET_FOLDER}/smee)
+    elif [[ -d $3 ]]; then
+      export PAC_SECRET_FOLDER=$3
+      smee_url=$(cat ${PAC_SECRET_FOLDER}/smee)
+    else
+      echo "Cannot find $3 folder or ~/.password-store/$3 folder"
       exit 1
-      ;;
-    esac
-    shift
-  done
+    fi
+    run_with_hooks configure-pac configure_pac --no-ingress
+    if [[ "${USE_NODEPORT_WEBHOOK}" != "true" ]]; then
+      show_step "Creating gosmee service in namespace gosmee"
+      makeGosmee gosmee ${smee_url} http://pipelines-as-code-controller.$PAC_CONTROLLER_TARGET_NS.svc.cluster.local:8080 gosmee
+    else
+      run_with_hooks patch-pac-service-nodeport patch_pac_service_nodeport
+      echo "NodePort webhook enabled, skipping gosmee deployment"
+    fi
+    exit
+    ;;
+  --stop-kind)
+    run_with_hooks stop-kind stop_kind
+    exit
+    ;;
+  --redeploy-kind)
+    install_kind
+    run_with_hooks sync-kubeconfig sync_kubeconfig
+    exit
+    ;;
+  "") ;;
+  *)
+    echo "Not implemented"
+    help
+    exit 1
+    ;;
+  esac
 
   # No arguments given - interactive mode (or CI mode)
   show_config
@@ -1405,4 +1326,4 @@ function parse_args() {
   exit
 }
 
-parse_args "$@"
+cli_main "$@"

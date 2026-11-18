@@ -160,6 +160,23 @@ jobs:
           rm -rf "${clone_dir}"
           echo "=== Forgejo clone smoke test passed ==="
 
+      - name: Verify agent setup reuses Kind and redeploys a component
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          cluster_id=$(docker inspect kind-control-plane --format '{{.Id}}')
+          ./startpaac --up --plan --output json > /tmp/startpaac-plan.json
+          jq -e '.ok and .data.steps[0] == "reuse-kind"' /tmp/startpaac-plan.json
+          for attempt in 1 2; do
+            ./startpaac --up --non-interactive --output json > /tmp/startpaac-up.json
+            jq -e '.ok and all(.data.components[]; .ready)' /tmp/startpaac-up.json
+            test "$cluster_id" = "$(docker inspect kind-control-plane --format '{{.Id}}')"
+          done
+          ./startpaac -c watcher --non-interactive --output json > /tmp/startpaac-redeploy.json
+          jq -e '.ok' /tmp/startpaac-redeploy.json
+          ./startpaac --status --output json > /tmp/startpaac-status.json
+          jq -e '.ok and all(.data.components[]; .ready)' /tmp/startpaac-status.json
+
       - name: Collect diagnostics on failure
         if: failure()
         run: |
