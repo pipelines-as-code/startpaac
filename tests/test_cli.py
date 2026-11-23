@@ -123,15 +123,6 @@ elif tool == "ko":
         print("build failed", file=sys.stderr)
         sys.exit(1)
     print("{}")
-elif tool == "pass":
-    if "--pinentry-mode error" not in os.environ.get("PASSWORD_STORE_GPG_OPTS", ""):
-        sys.exit(90)
-    counter = state.parent / "pass-count"
-    count = int(counter.read_text()) + 1 if counter.exists() else 1
-    counter.write_text(str(count))
-    if os.environ.get("FAKE_LOCKED") or count >= int(os.environ.get("FAKE_PASS_FAIL_AT", "999")):
-        sys.exit(1)
-    print("https://relay.example/RELAY-SENTINEL" if args[-1].endswith("/smee") else "SECRET-SENTINEL")
 elif tool == "systemctl":
     sys.exit(0 if os.environ.get("FAKE_FORWARDER_RUNNING") and "is-active" in args else 1)
 elif tool == "gum" and args[0] == "confirm":
@@ -155,10 +146,16 @@ class AgentCliTest(unittest.TestCase):
         (self.pac / "go.mod").touch()
         for manifest in ["400-controller.yaml", "500-watcher.yaml", "600-webhook.yaml"]:
             (self.pac / "config" / manifest).touch()
-        self.secrets = self.base / "secrets"
-        self.secrets.mkdir()
-        for name in ["github-application-id", "github-private-key", "webhook.secret", "smee"]:
-            (self.secrets / name).write_text("RELAY-SENTINEL" if name == "smee" else "SECRET-SENTINEL")
+        self.e2e_config = self.base / "e2e-config.yaml"
+        self.e2e_config.write_text(
+            "common:\n"
+            "  webhook_secret: SECRET-SENTINEL\n"
+            "github:\n"
+            "  application_id: SECRET-SENTINEL\n"
+            "  private_key: |\n"
+            "    SECRET-SENTINEL\n"
+            "  smee_url: https://relay.example/RELAY-SENTINEL\n"
+        )
         certs = self.base / "certs"
         for domain in ["_.127.0.0.1.nip.io", "registry.127.0.0.1.nip.io"]:
             folder = certs / domain
@@ -171,7 +168,7 @@ class AgentCliTest(unittest.TestCase):
             path.write_text("#!" + sys.executable + "\n" + MOCK)
             path.chmod(0o755)
         self.env = {"PATH": str(self.bin) + ":/usr/bin:/bin", "HOME": str(self.home), "TARGET_HOST": "local",
-            "PAC_DIR": str(self.pac), "PAC_SECRET_FOLDER": str(self.secrets),
+            "PAC_DIR": str(self.pac), "PAC_E2E_CONFIG": str(self.e2e_config),
             "STARTPAC_CONFIG_FILE": str(self.home / ".config/startpaac/config"),
             "CERT_DIR": str(certs), "FAKE_STATE": str(self.state), "FAKE_LOG": str(self.log)}
 
@@ -279,8 +276,7 @@ class AgentCliTest(unittest.TestCase):
         self.assertEqual(self.commands(), [])
 
     def test_doctor_collects_failures_without_writing(self):
-        for path in self.secrets.iterdir():
-            path.unlink()
+        self.e2e_config.write_text("common:\n  webhook_secret: ''\n")
         data = json.loads(self.run_cli("--doctor", "--output=json", code=1).stdout)
         self.assertIn("credentials", [error["code"] for error in data["errors"]])
         self.assertEqual(list(self.home.iterdir()), [])
@@ -334,14 +330,14 @@ class AgentCliTest(unittest.TestCase):
 
     def test_missing_credentials_prevent_all_deployment_changes(self):
         self.existing_cluster()
-        (self.secrets / "github-private-key").unlink()
+        self.e2e_config.write_text("common:\n  webhook_secret: SECRET-SENTINEL\ngithub:\n  application_id: SECRET-SENTINEL\n")
         data = json.loads(self.run_cli("-p", "--non-interactive", "--output=json", code=1).stdout)
         self.assertIn("credentials", [error["code"] for error in data["errors"]])
         self.assertEqual(self.mutations(), [])
 
     def test_go_is_required_before_a_source_build(self):
         (self.bin / "go").unlink()
-        for tool in ["cat", "jq", "sed", "mktemp"]:
+        for tool in ["cat", "jq", "sed", "mktemp", "yq"]:
             (self.bin / tool).symlink_to(shutil.which(tool))
         env = dict(self.env, PATH=str(self.bin))
         for args in [("--doctor",), ("--up", "--plan"), ("--up",)]:
@@ -467,7 +463,7 @@ class AgentCliTest(unittest.TestCase):
         self.existing_cluster()
         del self.env["TARGET_HOST"]
         endpoint = "unix:///tmp/custom-docker.sock"
-        self.env.update(PAC_DIR=str(self.base / "missing-source"), PAC_SECRET_FOLDER=str(self.base / "missing-secrets"))
+        self.env.update(PAC_DIR=str(self.base / "missing-source"), PAC_E2E_CONFIG=str(self.base / "missing-e2e.yaml"))
         self.env.update(DOCKER_CONTEXT="alternate-local", FAKE_DOCKER_ENDPOINT=endpoint, FAKE_KIND_DOCKER_HOST=endpoint)
         plan = json.loads(self.run_cli("--stop-kind", "--plan", "--output=json").stdout)
         self.assertTrue(plan["data"]["destructive"])
@@ -558,8 +554,7 @@ class AgentCliTest(unittest.TestCase):
                     preferences.write_text('{"pac":true}')
                 else:
                     preferences.unlink(missing_ok=True)
-                env = dict(self.env, INSTALL_FORGE="false", INSTALL_TEKTON_DASHBOARD="false",
-                    PAC_PASS_SECOND_FOLDER="test/app", **overrides)
+                env = dict(self.env, INSTALL_FORGE="false", INSTALL_TEKTON_DASHBOARD="false", **overrides)
                 self.run_cli(*args, code=code, env=env, redacted=False)
                 self.assertEqual(any(cmd[:2] == ["gum", "choose"] for cmd in self.commands()), choose)
                 self.assertEqual(any(cmd[:3] == ["kubectl", "config", "use-context"] for cmd in self.commands()), managed)
@@ -681,38 +676,15 @@ class AgentCliTest(unittest.TestCase):
         self.assertIn("Webhook forwarder: running", result.stdout)
         self.assertIn("Webhook delivery: unverified", result.stdout)
 
-    def configure_pass(self):
-        path = self.bin / "pass"
-        path.write_text("#!" + sys.executable + "\n" + MOCK)
-        path.chmod(0o755)
-        self.env.update(PAC_SECRET_STORAGE="pass", PAC_PASS_SECRET_FOLDER="test/app")
-
-    def test_locked_pass_reports_failure_without_prompting(self):
-        self.configure_pass()
-        self.env["FAKE_LOCKED"] = "1"
-        self.run_cli("--up", "--output=json", code=1)
-        self.assertEqual(self.mutations(), [])
-
-    def test_credentials_lost_during_read_do_not_delete_cluster_secret(self):
-        self.existing_cluster()
-        self.configure_pass()
-        for failure_at in [9, 12]:
-            with self.subTest(failure_at=failure_at):
-                self.env["FAKE_PASS_FAIL_AT"] = str(failure_at)
-                (self.base / "pass-count").unlink(missing_ok=True)
-                self.run_cli("-p", "--output=json", code=1)
-                self.assertFalse(any("secret" in cmd for cmd in self.mutations()))
-
     def test_plain_up_preserves_cluster_credentials_when_access_is_lost(self):
         self.existing_cluster()
-        credential = self.secrets / "github-private-key"
         hook = self.home / ".config/startpaac/hooks/pre-configure-pac"
         hook.parent.mkdir(parents=True)
-        hook.write_text(f'#!/bin/bash\nrm "{credential}"\n')
+        hook.write_text(f'#!/bin/bash\nrm "{self.e2e_config}"\n')
         hook.chmod(0o755)
 
         result = self.run_cli("--up", code=1, env=dict(self.env, NON_INTERACTIVE="false"))
-        self.assertFalse(credential.exists())
+        self.assertFalse(self.e2e_config.exists())
         self.assertIn("existing cluster secrets were left unchanged", result.stdout)
         self.assertFalse(any("secret" in cmd and "pipelines-as-code-secret" in cmd for cmd in self.mutations()))
 
@@ -724,6 +696,140 @@ class AgentCliTest(unittest.TestCase):
         self.assertIn("timed out", result.stderr)
         curl = next(cmd for cmd in self.commands() if cmd[0] == "curl")
         self.assertIn("--max-time", curl)
+
+    def write_e2e_config(self, path, include_primary=True, include_ghe=True):
+        sections = []
+        if include_primary:
+            sections.append(
+                "common:\n"
+                "  webhook_secret: yaml-secret\n"
+                "github:\n"
+                "  application_id: '11111'\n"
+                "  private_key: |\n"
+                "    -----BEGIN RSA PRIVATE KEY-----\n"
+                "    TESTKEY\n"
+                "    -----END RSA PRIVATE KEY-----\n"
+                "  smee_url: https://hook.pipelinesascode.com/yaml-test\n"
+            )
+        else:
+            sections.append("common:\n  webhook_secret: ''\ngithub:\n  application_id: ''\n")
+        if include_ghe:
+            sections.append(
+                "github_enterprise:\n"
+                "  api_url: https://ghe.example.com/api/v3\n"
+                "  application_id: '22222'\n"
+                "  private_key: |\n"
+                "    -----BEGIN RSA PRIVATE KEY-----\n"
+                "    GHEKEY\n"
+                "    -----END RSA PRIVATE KEY-----\n"
+                "  webhook_secret: ghe-secret\n"
+                "  smee_url: https://hook.pipelinesascode.com/yaml-ghe\n"
+            )
+        path.write_text("".join(sections))
+        return path
+
+    def test_e2e_config_flag_satisfies_doctor(self):
+        cfg = self.write_e2e_config(self.base / "e2e-config-flag.yaml")
+        env = dict(self.env)
+        env.pop("PAC_E2E_CONFIG", None)
+        (self.base / "config").write_text(f"PAC_DIR={self.pac}\nTARGET_HOST=local\n")
+        data = json.loads(self.run_cli("--doctor", "--e2e-config", str(cfg), "--output=json", env=env).stdout)
+        self.assertTrue(data["ok"], data)
+        checks = {c["id"]: c["ok"] for c in data["data"]["checks"]}
+        self.assertTrue(checks.get("e2e_config_file"))
+        self.assertTrue(checks.get("tool_yaml_parser"))
+        self.assertTrue(checks.get("credentials"))
+
+    def test_e2e_config_env_var_works_with_relative_path(self):
+        cfg = self.write_e2e_config(self.base / "rel-e2e.yaml")
+        env = dict(self.env, PAC_E2E_CONFIG=cfg.name)
+        (self.base / "config").write_text(f"PAC_DIR={self.pac}\nTARGET_HOST=local\n")
+        result = subprocess.run(
+            [str(ROOT / "startpaac"), "--doctor", "--output=json"],
+            cwd=str(self.base), env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = json.loads(result.stdout)
+        self.assertTrue(data["ok"], data)
+
+    def test_e2e_config_missing_file_fails_doctor(self):
+        missing = self.base / "does-not-exist.yaml"
+        data = json.loads(
+            self.run_cli("--doctor", f"--e2e-config={missing}", "--output=json", code=1).stdout
+        )
+        self.assertFalse(data["ok"])
+        codes = {e["code"] for e in data["errors"]}
+        self.assertIn("e2e_config_file", codes)
+        self.assertIn("credentials", codes)
+
+    def test_e2e_config_install_paac_applies_secret_from_yaml(self):
+        self.existing_cluster()
+        cfg = self.write_e2e_config(self.base / "e2e-config-install.yaml")
+        env = dict(self.env)
+        env.pop("PAC_E2E_CONFIG", None)
+        (self.base / "config").write_text(f"PAC_DIR={self.pac}\nTARGET_HOST=local\n")
+        data = json.loads(self.run_cli("-p", f"--e2e-config={cfg}", "--output=json", env=env).stdout)
+        self.assertTrue(data["ok"], data)
+        self.assertTrue(
+            any("create" in cmd and "pipelines-as-code-secret" in cmd for cmd in self.commands())
+        )
+
+    def test_e2e_config_requires_value(self):
+        data = json.loads(self.run_cli("--doctor", "--e2e-config", "--output=json", code=2).stdout)
+        self.assertEqual(data["errors"][0]["code"], "invalid_arguments")
+
+    def test_configure_pac_target_accepts_relative_yaml_and_rejects_malformed_without_deleting(self):
+        self.existing_cluster()
+        cfg = self.write_e2e_config(self.base / "target-e2e.yaml")
+        kubeconfig = self.base / "kubeconfig"
+        kubeconfig.write_text("apiVersion: v1\nkind: Config\n")
+        result = subprocess.run(
+            [str(ROOT / "startpaac"), "--configure-pac-target", str(kubeconfig), "pipelines-as-code", cfg.name],
+            cwd=str(self.base), env=self.env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(
+            any("create" in cmd and "pipelines-as-code-secret" in cmd for cmd in self.commands())
+        )
+
+        # Malformed YAML must fail nonzero and never delete pipelines-as-code-secret.
+        (self.base / "commands").unlink(missing_ok=True)
+        bad = self.base / "bad-target.yaml"
+        bad.write_text("github:\n  application_id: [unterminated\n")
+        result = subprocess.run(
+            [str(ROOT / "startpaac"), "--configure-pac-target", str(kubeconfig), "pipelines-as-code", bad.name],
+            cwd=str(self.base), env=self.env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(
+            any("delete" in cmd and "pipelines-as-code-secret" in cmd for cmd in self.commands())
+        )
+
+        # Missing relative file in cwd must NOT fall back to a same-named file inside PAC_DIR.
+        (self.base / "commands").unlink(missing_ok=True)
+        self.write_e2e_config(self.pac / "shadow.yaml")
+        result = subprocess.run(
+            [str(ROOT / "startpaac"), "--configure-pac-target", str(kubeconfig), "pipelines-as-code", "shadow.yaml"],
+            cwd=str(self.base), env=self.env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(
+            any("pipelines-as-code-secret" in cmd for cmd in self.commands())
+        )
+
+    def test_configure_pac_with_malformed_env_yaml_fails_without_deleting_secret(self):
+        self.existing_cluster()
+        bad = self.base / "bad-env.yaml"
+        bad.write_text("github:\n  application_id: [unterminated\n")
+        env = dict(self.env, PAC_E2E_CONFIG=str(bad))
+        result = subprocess.run(
+            [str(ROOT / "startpaac"), "--configure-pac"],
+            cwd=str(self.base), env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(
+            any("delete" in cmd and "pipelines-as-code-secret" in cmd for cmd in self.commands())
+        )
 
 
 if __name__ == "__main__":

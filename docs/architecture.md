@@ -248,33 +248,27 @@ PAC Controller (reconciliation)
 
 ## Secret Management
 
-### Two Approaches
-
-1. **Password Store (`pass`)**
-   - Encrypted secret storage
-   - Recommended for security
-   - Environment: `PAC_PASS_SECRET_FOLDER`
-
-2. **Plain Text Files**
-   - Simple file-based storage
-   - Development only
-   - Environment: `PAC_SECRET_FOLDER`
+Credentials are read from a Pipelines-as-Code E2E YAML config file
+(`PAC_E2E_CONFIG` or `--e2e-config FILE`, defaulting to
+`~/.local/share/startpaac/e2e-config.yaml`).
 
 When no usable credentials exist, interactive runs (and `--setup-github-app`)
 can create the GitHub App automatically via GitHub's App Manifest flow: a local
 Python callback server (`lib/github_app_create.py`) receives the redirect,
-exchanges the temporary code for credentials, and startpaac stores them in
-`pass` or `~/.local/share/startpaac/secrets`. Webhook delivery is forwarded
-from a hook.pipelinesascode.com relay by a gosmee user service (systemd user
-unit on Linux, LaunchAgent on macOS).
+exchanges the temporary code for credentials, and startpaac writes them to
+`PAC_E2E_CONFIG` (`0600`). Webhook delivery is forwarded from a
+hook.pipelinesascode.com relay by a gosmee user service (systemd user unit on
+Linux, LaunchAgent on macOS).
 
-### Required Secrets
-```
-secrets/
-├── github-application-id   # GitHub App ID
-├── github-private-key      # GitHub App private key (PEM)
-├── webhook.secret          # Webhook shared secret
-└── smee                    # Webhook proxy URL
+### Required YAML Fields
+```yaml
+common:
+  webhook_secret: ""   # Webhook shared secret
+github:
+  application_id: ""   # GitHub App ID
+  private_key: |       # GitHub App private key (PEM)
+    ...
+  smee_url: ""         # Webhook proxy URL
 ```
 
 ## Configuration System
@@ -291,8 +285,7 @@ secrets/
 - `TARGET_HOST`: Where to run Kind (local or remote VM)
 - `DOMAIN_NAME`: Base domain for ingress
 - `PAC_DIR`: Path to Pipelines as Code source
-- `PAC_SECRET_FOLDER`: Path to plain text secrets
-- `PAC_PASS_SECRET_FOLDER`: Pass store path for secrets
+- `PAC_E2E_CONFIG`: Path to Pipelines-as-Code E2E YAML config
 - `INSTALL_*`: Boolean flags for optional components
 
 ## Network Architecture

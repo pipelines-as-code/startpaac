@@ -14,26 +14,12 @@ elif [[ ${STARTPAAC_CREATE_CONFIG:-true} == true && -z ${PAC_DIR:-} ]]; then
 #
 # PAC_DIR=~/path/to/pipelines-as-code
 #
-# PAC_PASS_SECRET_FOLDER is the path to a folder in https://passwordstore.org/
-# where you have your pac secrets. The folder contains those keys:
-# github/apps/my-app
-# ├── github-application-id
-# ├── github-private-key
-# ├── smee
-# └── webhook.secret
-# github-application-id and github-private-key are the github application id and private key when you create your github app
-# smee is the smee.io or https://hook.pipelinesascode.com generated webhook URL as set in your github apps.
-# webhook.secret is the shared secret as set in your github apps.
-# PAC_PASS_SECRET_FOLDER=github/apps/my-app
-#
-# PAC_SECRET_FOLDER is an alternative to PASS_SECRET_FOLDER where you have your
-# pac secrets in plain text. The folder has the same structure as the
-# PASS_SECRET_FOLDER the only difference is that the files are in plain text.
-#
-# PAC_SECRET_FOLDER=~/path/to/secrets
-#
-# When both secret backends are configured, select which one startpaac uses.
-# PAC_SECRET_STORAGE=folder # or pass
+# PAC_E2E_CONFIG is the path to a Pipelines-as-Code E2E YAML config file,
+# or a password-store entry prefixed with pass: (e.g. pass:pac/e2e-config).
+# startpaac reads GitHub App secrets, smee URLs, webhook secret, and
+# second-controller GHE settings directly from it.
+# PAC_E2E_CONFIG=pass:pac/e2e-config
+# PAC_E2E_CONFIG=~/.local/share/startpaac/e2e-config.yaml
 #
 # Hostname of the GitHub Enterprise instance used by the second controller.
 # Use only the hostname, without an https:// prefix, path, or port.
@@ -100,23 +86,29 @@ elif [[ ${STARTPAAC_CREATE_CONFIG:-true} == true && -z ${PAC_DIR:-} ]]; then
 
 # We are defaulting to a local install
 PAC_DIR=~/go/src/github.com/tektoncd/pac/main
-PAC_SECRET_FOLDER=~/.local/share/startpaac/secrets
+PAC_E2E_CONFIG=~/.local/share/startpaac/e2e-config.yaml
 TARGET_HOST=local
 EOF
 
-  if [[ ! -d ~/.local/share/startpaac ]]; then
-    mkdir -p ~/.local/share/startpaac/secrets
-    for i in github-application-id github-private-key smee webhook.secret; do
-      touch ~/.local/share/startpaac/secrets/$i
-    done
+  if [[ ! -f ~/.local/share/startpaac/e2e-config.yaml ]]; then
+    (umask 077 && mkdir -p ~/.local/share/startpaac && cat <<'YAML' >~/.local/share/startpaac/e2e-config.yaml
+common:
+  webhook_secret: ""
+
+github:
+  application_id: ""
+  private_key: ""
+  smee_url: ""
+YAML
+    )
   fi
 
   if [[ ${SETUP_GITHUB_APP_ONLY:-false} == true ]]; then
     source "${CONFIG_FILE}"
   else
     echo "Adjust your PAC_DIR to where pipelines-as-code is checked out"
-    echo "You can run './startpaac --setup-github-app' to create a GitHub App and fill the secrets automatically,"
-    echo "or go to the directory ~/.local/share/startpaac/secrets and add the secrets into the files in there"
+    echo "You can run './startpaac --setup-github-app' to create a GitHub App and fill ~/.local/share/startpaac/e2e-config.yaml automatically,"
+    echo "or edit ~/.local/share/startpaac/e2e-config.yaml (or pass --e2e-config FILE)."
     exit 1
   fi
 elif [[ ${CLI_MANAGED:-false} != true ]]; then
