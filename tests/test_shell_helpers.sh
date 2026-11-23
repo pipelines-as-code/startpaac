@@ -109,6 +109,18 @@ EOF
 assert_not "incomplete PAC_E2E_CONFIG fails check" \
   env PAC_E2E_CONFIG="${e2e_incomplete}" /bin/bash -c 'source "$1/lib/common.sh"; pac_secrets_complete primary' _ "${SP}"
 
+# Collection-valued credential fields (list/map) are rejected
+e2e_collection="${TESTTMP}/e2e-collection.yaml"
+cat >"${e2e_collection}" <<'EOF'
+common:
+  webhook_secret: "yaml-webhook-secret"
+github:
+  application_id: 12345
+  private_key: []
+EOF
+assert_not "collection-valued private_key fails pac_secrets_complete" \
+  env PAC_E2E_CONFIG="${e2e_collection}" /bin/bash -c 'source "$1/lib/common.sh"; pac_secrets_complete primary' _ "${SP}"
+
 # Malformed YAML fails closed with nonzero exit status
 e2e_malformed="${TESTTMP}/e2e-malformed.yaml"
 printf 'github:\n  application_id: [unterminated\n' >"${e2e_malformed}"

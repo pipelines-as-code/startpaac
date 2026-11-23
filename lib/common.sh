@@ -356,15 +356,14 @@ pac_e2e_config_read() {
   [[ -n ${file} ]] || return 1
   local parser
   parser=$(pac_yaml_parser) || return 1
-  local expr=".${section}.${field} | select(. != null and . != \"\")"
   (
     set -o pipefail
     case ${parser} in
     yq-go)
-      pac_e2e_config_stream "${file}" | yq eval -r "${expr}" - 2>/dev/null
+      pac_e2e_config_stream "${file}" | yq eval -r ".${section}.${field} | select(. != null and . != \"\" and kind == \"scalar\")" - 2>/dev/null
       ;;
     yq-py)
-      pac_e2e_config_stream "${file}" | yq -r "${expr}" - 2>/dev/null
+      pac_e2e_config_stream "${file}" | yq -r ".${section}.${field} | select(. != null and . != \"\" and type != \"array\" and type != \"object\")" - 2>/dev/null
       ;;
     python)
       pac_e2e_config_stream "${file}" | python3 -c '
@@ -374,7 +373,7 @@ if not isinstance(data, dict):
     sys.exit(0)
 sec = data.get(sys.argv[1])
 val = sec.get(sys.argv[2]) if isinstance(sec, dict) else None
-if val is not None and val != "":
+if val is not None and val != "" and not isinstance(val, (dict, list)):
     sys.stdout.write(str(val))
 ' "${section}" "${field}" 2>/dev/null
       ;;
