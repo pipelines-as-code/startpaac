@@ -444,24 +444,55 @@ _input() {
 
 # Return 0 when the PAC_E2E_CONFIG file or pass:<entry> exists, parses as valid
 # YAML, and contains no collection-valued credential or setting fields.
+# Streams the source once and validates all fields in a single parser invocation.
 pac_e2e_config_valid() {
-  local file=${1:-${PAC_E2E_CONFIG:-}} pair section field
-  pac_e2e_config_exists "${file}" || return 1
-  for pair in \
-    common.webhook_secret \
-    github.application_id \
-    github.private_key \
-    github.smee_url \
-    github_enterprise.application_id \
-    github_enterprise.private_key \
-    github_enterprise.webhook_secret \
-    github_enterprise.smee_url \
-    github_enterprise.api_url; do
-    section=${pair%%.*}
-    field=${pair#*.}
-    pac_e2e_config_read_one "${section}" "${field}" "${file}" >/dev/null || return 1
-  done
-  return 0
+  local file=${1:-${PAC_E2E_CONFIG:-}}
+  [[ -n ${file} ]] || return 1
+  local parser
+  parser=$(pac_yaml_parser) || return 1
+  (
+    set -o pipefail
+    case ${parser} in
+    yq-go)
+      pac_e2e_config_stream "${file}" | yq eval -e '([.common.webhook_secret, .github.application_id, .github.private_key, .github.smee_url, .github_enterprise.application_id, .github_enterprise.private_key, .github_enterprise.webhook_secret, .github_enterprise.smee_url, .github_enterprise.api_url] | all_c(. == null or kind == "scalar"))' - >/dev/null 2>&1
+      ;;
+    yq-py)
+      pac_e2e_config_stream "${file}" | yq -e '[.common.webhook_secret, .github.application_id, .github.private_key, .github.smee_url, .github_enterprise.application_id, .github_enterprise.private_key, .github_enterprise.webhook_secret, .github_enterprise.smee_url, .github_enterprise.api_url] | all(. == null or (type != "array" and type != "object"))' - >/dev/null 2>&1
+      ;;
+    python)
+      pac_e2e_config_stream "${file}" | python3 -c '
+import sys, yaml
+data = yaml.safe_load(sys.stdin)
+if data is None:
+    sys.exit(0)
+if not isinstance(data, dict):
+    sys.exit(1)
+fields = [
+    ("common", "webhook_secret"),
+    ("github", "application_id"),
+    ("github", "private_key"),
+    ("github", "smee_url"),
+    ("github_enterprise", "application_id"),
+    ("github_enterprise", "private_key"),
+    ("github_enterprise", "webhook_secret"),
+    ("github_enterprise", "smee_url"),
+    ("github_enterprise", "api_url"),
+]
+for sec, key in fields:
+    section = data.get(sec)
+    if section is None:
+        continue
+    if not isinstance(section, dict):
+        sys.exit(1)
+    if isinstance(section.get(key), (dict, list)):
+        sys.exit(1)
+' 2>/dev/null
+      ;;
+    *)
+      return 1
+      ;;
+    esac
+  )
 }
 
 # Write primary GitHub App credentials from an output directory into a YAML config file

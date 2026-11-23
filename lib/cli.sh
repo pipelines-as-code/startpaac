@@ -367,8 +367,8 @@ cli_preflight() {
   case ${CLI_ACTION} in
   --up | --doctor | --install-paac)
     ok=false
-    pac_e2e_config_exists "${PAC_E2E_CONFIG:-}" && ok=true
-    cli_check e2e_config_file "${ok}" "PAC_E2E_CONFIG exists: ${ok}" "Set PAC_E2E_CONFIG (or pass --e2e-config FILE or pass:<entry>) to a readable E2E YAML config."
+    pac_e2e_config_valid "${PAC_E2E_CONFIG:-}" && ok=true
+    cli_check e2e_config_file "${ok}" "PAC_E2E_CONFIG valid: ${ok}" "Set PAC_E2E_CONFIG (or pass --e2e-config FILE or pass:<entry>) to a readable, valid E2E YAML config."
     if [[ -n ${PAC_E2E_CONFIG_OVERRIDE:-} ]]; then
       ok=false
       pac_e2e_config_valid "${PAC_E2E_CONFIG_OVERRIDE}" && ok=true
