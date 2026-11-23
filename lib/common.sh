@@ -454,10 +454,10 @@ pac_e2e_config_valid() {
     set -o pipefail
     case ${parser} in
     yq-go)
-      pac_e2e_config_stream "${file}" | yq eval -e '([.common.webhook_secret, .github.application_id, .github.private_key, .github.smee_url, .github_enterprise.application_id, .github_enterprise.private_key, .github_enterprise.webhook_secret, .github_enterprise.smee_url, .github_enterprise.api_url] | all_c(. == null or kind == "scalar"))' - >/dev/null 2>&1
+      pac_e2e_config_stream "${file}" | yq eval-all -e '([.common.webhook_secret, .github.application_id, .github.private_key, .github.smee_url, .github_enterprise.application_id, .github_enterprise.private_key, .github_enterprise.webhook_secret, .github_enterprise.smee_url, .github_enterprise.api_url] | all_c(. == null or kind == "scalar")) as $item ireduce (true; . and $item)' - >/dev/null 2>&1
       ;;
     yq-py)
-      pac_e2e_config_stream "${file}" | yq -e '[.common.webhook_secret, .github.application_id, .github.private_key, .github.smee_url, .github_enterprise.application_id, .github_enterprise.private_key, .github_enterprise.webhook_secret, .github_enterprise.smee_url, .github_enterprise.api_url] | all(. == null or (type != "array" and type != "object"))' - >/dev/null 2>&1
+      pac_e2e_config_stream "${file}" | yq -s -e '[.[] | .common.webhook_secret, .github.application_id, .github.private_key, .github.smee_url, .github_enterprise.application_id, .github_enterprise.private_key, .github_enterprise.webhook_secret, .github_enterprise.smee_url, .github_enterprise.api_url] | all(. == null or (type != "array" and type != "object"))' - >/dev/null 2>&1
       ;;
     python)
       pac_e2e_config_stream "${file}" | python3 -c '
