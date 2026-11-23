@@ -47,8 +47,10 @@ initialize_runtime() {
   FORGE_HOST=${FORGE_HOST:-""}
   INSTALL_GITHUB_SECOND_CTRL=${INSTALL_GITHUB_SECOND_CTRL:-""}
   INSTALL_FORGE=${INSTALL_FORGE:-"true"}
-  PAC_PASS_SECOND_FOLDER=${PAC_PASS_SECOND_FOLDER:-}
   PAC_GITHUB_SECOND_HOSTNAME=${PAC_GITHUB_SECOND_HOSTNAME:-${TEST_GITHUB_SECOND_API_URL:-}}
+  if [[ -z ${PAC_GITHUB_SECOND_HOSTNAME} ]] && pac_e2e_config_exists "${PAC_E2E_CONFIG:-}"; then
+    PAC_GITHUB_SECOND_HOSTNAME=$(normalize_provider_hostname "$(pac_e2e_config_read github_enterprise api_url || true)")
+  fi
   PAC_DEBUG_IMAGE=${PAC_DEBUG_IMAGE:-registry.access.redhat.com/ubi9/ubi-minimal}
   PAC_IMAGE_NONROOT=${PAC_IMAGE_NONROOT:-"true"}
   GOSMEE_LOG_LEVEL=${GOSMEE_LOG_LEVEL:-debug}
@@ -87,6 +89,9 @@ initialize_runtime() {
     PAC_WEB_URL=${PAC_WEB_URL:-"https://${PAC}"}
   fi
   PAC_WEBHOOK_SECRET=${PAC_WEBHOOK_SECRET:-""}
+  if [[ -z ${PAC_WEBHOOK_SECRET} ]] && pac_e2e_config_exists "${PAC_E2E_CONFIG:-}"; then
+    PAC_WEBHOOK_SECRET=$(pac_e2e_config_read common webhook_secret || true)
+  fi
 
   [[ ${CLI_MANAGED} != true && ${SETUP_GITHUB_APP_ONLY} != true && (-z ${DOMAIN_NAME} || -z ${TARGET_HOST} || -z ${TARGET_BIND_IP:-} || -z ${REGISTRY} || -z ${DASHBOARD:-} || -z ${PAC}) ]] && {
     echo "Need to set DOMAIN_NAME, TARGET_HOST, TARGET_BIND_IP, REGISTRY, DASHBOARD and PAC in your $HOME/.config/startpaac/config"
@@ -117,6 +122,9 @@ REGISTRY: ${protocol}://${REGISTRY}
 FORGE_HOST: ${protocol}://${FORGE_HOST}
 DASHBOARD: ${protocol}://${DASHBOARD}
 EOF
+  if [[ -n ${PAC_E2E_CONFIG:-} ]]; then
+    echo "PAC_E2E_CONFIG: ${PAC_E2E_CONFIG}"
+  fi
   if [[ "${USE_NODEPORT_WEBHOOK}" == "true" ]]; then
     echo "PAC WEBHOOK: ${PAC_WEB_URL} (NodePort - no gosmee needed)"
   else
@@ -406,14 +414,12 @@ install_pac() {
 }
 
 create_pac_secret() (
-  local folder=$1 secret_name=$2 target_ns=$3 secret_tmp passk value
-  shift 3
-  local -a read_method=("$@")
+  local secret_name=$1 target_ns=$2 scope=${3:-primary} secret_tmp passk value
   umask 077
   secret_tmp=$(mktemp -d /tmp/.startpaac-secret.XXXXXX)
   trap 'rm -rf "${secret_tmp}"' EXIT
   for passk in github-application-id github-private-key webhook.secret; do
-    if ! "${read_method[@]}" "${folder}/${passk}" >"${secret_tmp}/${passk}" 2>/dev/null || [[ ! -s ${secret_tmp}/${passk} ]]; then
+    if ! pac_secret_read "${passk}" "${scope}" >"${secret_tmp}/${passk}" 2>/dev/null || [[ ! -s ${secret_tmp}/${passk} ]]; then
       echo 'Cannot read PAC credentials; existing cluster secrets were left unchanged.' >&2
       return 1
     fi
@@ -467,44 +473,31 @@ persist_config_var() {
 
 # Guided GitHub App creation via the GitHub App Manifest flow.
 # Generates a hook.pipelinesascode.com relay URL, runs a small local python
-# server to receive the GitHub redirect, then stores the credentials in pass
-# or in a plain text folder.
+# server to receive the GitHub redirect, then stores the credentials in
+# PAC_E2E_CONFIG.
 setup_github_app() {
-  local storage location smee_url app_name org="" outdir summary app_url install_url persist_secret_folder=""
+  local smee_url app_name org="" outdir summary app_url install_url persist_e2e_config=""
   show_step "GitHub App setup"
 
   require_tool python3
   require_tool curl
   require_tool jq
 
-  # Storage: when both pass and a plain folder are configured, let the user pick
-  local have_pass=""
-  [[ -n ${PAC_PASS_SECRET_FOLDER:-} ]] && command -v pass &>/dev/null && have_pass=1
-  if [[ -n ${have_pass} && -n ${PAC_SECRET_FOLDER:-} ]]; then
-    if _confirm "Store credentials with pass under ${PAC_PASS_SECRET_FOLDER}? (No = plain files in ${PAC_SECRET_FOLDER})"; then
-      storage=pass
-    else
-      storage=folder
-    fi
-  elif [[ -n ${have_pass} ]]; then
-    storage=pass
-  else
-    storage=folder
+  if [[ -z ${PAC_E2E_CONFIG:-} ]]; then
+    PAC_E2E_CONFIG="${HOME}/.local/share/startpaac/e2e-config.yaml"
+    persist_e2e_config=1
   fi
-  if [[ ${storage} == pass ]]; then
-    location="pass folder ${PAC_PASS_SECRET_FOLDER}"
-  else
-    if [[ -z ${PAC_SECRET_FOLDER:-} ]]; then
-      PAC_SECRET_FOLDER="${HOME}/.local/share/startpaac/secrets"
-      persist_secret_folder=1
-    fi
-    (umask 077 && mkdir -p "${PAC_SECRET_FOLDER}")
-    location="folder ${PAC_SECRET_FOLDER}"
+  if ! pac_e2e_config_is_pass "${PAC_E2E_CONFIG}"; then
+    (umask 077 && mkdir -p "$(dirname "${PAC_E2E_CONFIG}")")
   fi
-  echo "Credentials will be stored in ${location}"
+  if pac_e2e_config_exists "${PAC_E2E_CONFIG}" && ! python3 -c 'import yaml' >/dev/null 2>&1 && [[ $(pac_yaml_parser 2>/dev/null || true) != yq-go ]]; then
+    echo "Error: PyYAML or Go yq is required to safely update existing ${PAC_E2E_CONFIG} without losing other sections." >&2
+    return 1
+  fi
+  echo "Credentials will be stored in ${PAC_E2E_CONFIG}"
 
-  if pac_secrets_complete "${storage}"; then
-    _confirm "GitHub App credentials already exist in ${location}. Create a new app and replace them?" || return 0
+  if pac_secrets_complete primary; then
+    _confirm "GitHub App credentials already exist in ${PAC_E2E_CONFIG}. Create a new app and replace them?" || return 0
   fi
 
   if ! _confirm "Create the GitHub App under your personal account? (No = organization)"; then
@@ -546,23 +539,10 @@ setup_github_app() {
 
   printf '%s' "${smee_url}" >"${outdir}/smee"
 
-  local key
-  if [[ ${storage} == pass ]]; then
-    for key in github-application-id github-private-key webhook.secret smee; do
-      pass insert -m -f "${PAC_PASS_SECRET_FOLDER}/${key}" <"${outdir}/${key}" >/dev/null
-    done
-  else
-    for key in github-application-id github-private-key webhook.secret smee; do
-      install -m 600 "${outdir}/${key}" "${PAC_SECRET_FOLDER}/${key}"
-    done
-  fi
+  pac_e2e_config_write_primary "${PAC_E2E_CONFIG}" "${outdir}" || return 1
 
-  # Persist the storage preference only now that credentials were stored, so
-  # an aborted or failed setup never pins an empty backend in the config.
-  PAC_SECRET_STORAGE=${storage}
-  persist_config_var PAC_SECRET_STORAGE "${PAC_SECRET_STORAGE}"
-  if [[ -n ${persist_secret_folder} ]]; then
-    persist_config_var PAC_SECRET_FOLDER "${PAC_SECRET_FOLDER}"
+  if [[ -n ${persist_e2e_config} ]]; then
+    persist_config_var PAC_E2E_CONFIG "${PAC_E2E_CONFIG}"
   fi
 
   app_url=$(jq -r '.html_url' <<<"${summary}")
@@ -599,7 +579,7 @@ maybe_setup_github_app() {
 }
 
 configure_pac() {
-  local pac_controller_secret=pipelines-as-code-secret no_ingress="" credential_storage=""
+  local pac_controller_secret=pipelines-as-code-secret no_ingress=""
   if [[ ${NON_INTERACTIVE:-false} == true ]] && ! pac_secrets_complete; then
     cli_error credentials_unavailable 'GitHub App credentials are unavailable; existing cluster secrets were left unchanged.' 'Restore credential access before retrying.'
     return 1
@@ -612,33 +592,36 @@ configure_pac() {
   fi
   patch_configmap "${PAC_CONTROLLER_TARGET_NS}"
 
-  credential_storage=$(pac_secret_storage)
-  if [[ ${credential_storage} == pass ]] && pac_secrets_complete pass; then
-    echo "Installing PAC secrets from pass folder: ${PAC_PASS_SECRET_FOLDER}"
-    create_pac_secret "${PAC_PASS_SECRET_FOLDER}" "${pac_controller_secret}" "${PAC_CONTROLLER_TARGET_NS}" pass show
-  elif [[ ${credential_storage} == folder ]] && pac_secrets_complete folder; then
-    echo "Installing PAC secrets from plain text folder: ${PAC_SECRET_FOLDER}"
-    create_pac_secret "${PAC_SECRET_FOLDER}" "${pac_controller_secret}" "${PAC_CONTROLLER_TARGET_NS}" cat
+  if pac_e2e_config_exists "${PAC_E2E_CONFIG:-}" && ! pac_e2e_config_valid "${PAC_E2E_CONFIG}"; then
+    if [[ ${NON_INTERACTIVE:-false} == true ]]; then
+      cli_error credentials_unavailable "Invalid YAML in ${PAC_E2E_CONFIG}; existing cluster secrets were left unchanged." 'Fix the YAML syntax and retry.'
+    else
+      echo "Error: invalid YAML in ${PAC_E2E_CONFIG}; existing cluster secrets were left unchanged." >&2
+    fi
+    return 1
+  fi
+
+  if pac_secrets_complete primary; then
+    echo "Installing PAC secrets from E2E YAML config: ${PAC_E2E_CONFIG}"
+    create_pac_secret "${pac_controller_secret}" "${PAC_CONTROLLER_TARGET_NS}" primary
   else
     if [[ ${NON_INTERACTIVE:-false} == true ]]; then
       cli_error credentials_unavailable 'GitHub App credentials became unavailable; existing cluster secrets were left unchanged.' 'Restore credential access before retrying.'
       return 1
     fi
+    if [[ ${CLI_E2E_CONFIG_EXPLICIT:-false} == true ]]; then
+      echo "Error: cannot read complete GitHub App credentials from ${PAC_E2E_CONFIG}; existing cluster secrets were left unchanged." >&2
+      return 1
+    fi
     cat <<EOF
   **No secret has been installed**
 
-  No usable GitHub App credentials were found (files may be missing or empty).
+  No usable GitHub App credentials were found in PAC_E2E_CONFIG.
 
-  You need to either create a pass https://www.passwordstore.org/ folder with
-  github-application-id github-private-key webhook.secret information in there
-  and export the PAC_PASS_SECRET_FOLDER variable to that folder
-
-  Or have a plain text folder with the same structure and export the
-  PAC_SECRET_FOLDER variable
-
-  Or run "startpaac --setup-github-app" to create a GitHub App automatically.
+  Pass a Pipelines-as-Code E2E YAML config file via PAC_E2E_CONFIG or
+  --e2e-config FILE (see test/e2e-config.yaml.example in pipelines-as-code),
+  or run "startpaac --setup-github-app" to create a GitHub App automatically.
 EOF
-    kubectl delete secret -n pipelines-as-code pipelines-as-code-secret >/dev/null 2>/dev/null || true
   fi
 }
 
@@ -797,34 +780,18 @@ function start_user_gosmee() {
 }
 
 function install_github_second_ctrl() {
-  local pac_controller_label="ghe" pac_controller_smee_url
+  local pac_controller_label="ghe" pac_controller_smee_url=""
   local pac_controller_secret=${pac_controller_label}-secret
   local pac_controller_configmap=${pac_controller_label}-configmap
   local gosmeeTargetURL=${pac_controller_label}.${PAC_DOMAIN}
   show_step "Installing GHE second controller for github"
 
-  [[ -z ${PAC_PASS_SECOND_FOLDER:-} && -z ${PAC_SECOND_SECRET_FOLDER:-} ]] && {
-    echo "You need to set the PAC_PASS_SECOND_FOLDER or PAC_SECOND_SECRET_FOLDER variables in your ${CONFIG_FILE}"
+  if ! pac_secrets_complete second; then
+    echo "You need to set PAC_E2E_CONFIG (--e2e-config) with complete github_enterprise credentials" >&2
     exit 1
-  }
-  if [[ -n ${PAC_PASS_SECOND_FOLDER} ]]; then
-    local password_store_path=${PASSWORD_STORE_DIR:-$HOME/.password-store}
-    [[ -d ${password_store_path}/${PAC_PASS_SECOND_FOLDER} ]] || {
-      echo "secondSecret ${PAC_PASS_SECOND_FOLDER} does not exist"
-      echo "set environment variable PAC_PASS_SECOND_FOLDER to the correct pass folder"
-      exit 1
-    }
-    echo "Using pass_secret_folder: ${PAC_PASS_SECOND_FOLDER}"
-    pac_controller_smee_url=$(pass show ${PAC_PASS_SECOND_FOLDER} | sed -n '/SMEE_URL/ { s/.*=//;p}')
-  elif [[ -n ${PAC_SECOND_SECRET_FOLDER} ]]; then
-    if [[ ! -d ${PAC_SECOND_SECRET_FOLDER} ]]; then
-      echo "folder for second secret ${PAC_SECOND_SECRET_FOLDER} does not exist"
-      echo "set environment variable PAC_SECOND_SECRET_FOLDER to the correct folder with all your environment secrets"
-      exit 1
-    fi
-    echo "Using secret_folder: ${PAC_SECOND_SECRET_FOLDER}"
-    pac_controller_smee_url=$(cat ${PAC_SECOND_SECRET_FOLDER}/smee)
   fi
+  echo "Using E2E YAML config for second controller: ${PAC_E2E_CONFIG}"
+  pac_controller_smee_url=$(pac_secret_read smee second || true)
 
   require_tool ko
 
@@ -850,33 +817,23 @@ function install_github_second_ctrl() {
       "{\"data\":{\"trusted-provider-hostnames\": \"${PAC_GITHUB_SECOND_HOSTNAME}\"}}" \
       --type merge "${pac_controller_configmap}"
   fi
-  kubectl delete secret ${pac_controller_secret} -n ${PAC_CONTROLLER_TARGET_NS} >/dev/null 2>/dev/null || true
-  kubectl create secret generic ${pac_controller_secret} -n ${PAC_CONTROLLER_TARGET_NS} >/dev/null
-  if [[ -n ${PAC_PASS_SECOND_FOLDER} ]]; then
-    echo "Installing PAC secrets from pass folder: ${PAC_PASS_SECRET_FOLDER}"
-    create_pac_secret ${PAC_PASS_SECOND_FOLDER} ${pac_controller_secret} ${PAC_CONTROLLER_TARGET_NS} pass show
-  elif [[ -n ${PAC_SECOND_SECRET_FOLDER} ]]; then
-    echo "Installing PAC secrets from plain text folder: ${PAC_SECOND_SECRET_FOLDER}"
-    create_pac_secret ${PAC_SECOND_SECRET_FOLDER} ${pac_controller_secret} ${PAC_CONTROLLER_TARGET_NS} cat
+  if pac_secrets_complete second; then
+    echo "Installing PAC second controller secrets from E2E YAML config: ${PAC_E2E_CONFIG}"
+    create_pac_secret "${pac_controller_secret}" "${PAC_CONTROLLER_TARGET_NS}" second
   else
-    cat <<EOF
-No secret has been installed.
-
-You need to either create a pass https://www.passwordstore.org/ folder with github-application-id
-github-private-key webhook.secret information in there and export the PAC_PASS_SECOND_FOLDER variable
-to that folder
-
-Or have a plain text folder with the same structure and export the PAC_SECOND_SECRET_FOLDER variable"
-
-Or have nothing and install the secrets manually after running the startpaac script.
-EOF
+    echo "Cannot read second controller credentials; existing cluster secrets were left unchanged." >&2
+    return 1
   fi
 
   show_step "Creating ingress for ${pac_controller_label} controller"
   create_httproute ${PAC_CONTROLLER_TARGET_NS} ${pac_controller_label}-controller "${gosmeeTargetURL}" 8080
   (kubectl delete deployment -n ${PAC_CONTROLLER_TARGET_NS} gosmee-${pac_controller_label} 2>&1 | grep -v "not found") || true
   if [[ ${CI_MODE} != "true" ]]; then
-    start_user_gosmee ghe ${pac_controller_smee_url} "${gosmeeTargetURL}"
+    if [[ -n ${pac_controller_smee_url} ]]; then
+      start_user_gosmee ghe "${pac_controller_smee_url}" "${gosmeeTargetURL}"
+    else
+      echo "Skipping gosmee webhook forwarder for ${pac_controller_label}: no smee URL configured"
+    fi
   fi
 }
 
@@ -923,9 +880,11 @@ all() {
   [[ ${INSTALL_POSTGRESQL} == "true" ]] && run_with_hooks install-postgresql install_postgresql
   [[ -n ${INSTALL_CUSTOM_OBJECT:-} && ${INSTALL_CUSTOM_OBJECT_ENABLED} == "true" ]] && run_with_hooks install-custom-objects install_custom_objects
 
-  # In CI mode, auto-enable second controller if secrets are present
-  if [[ ${CI_MODE} == "true" && ${CLI_ACTION:-} != --up ]] && [[ -n ${PAC_SECOND_SECRET_FOLDER:-} ]] && [[ -e ${PAC_SECOND_SECRET_FOLDER}/github-application-id ]]; then
-    INSTALL_GITHUB_SECOND_CTRL=true
+  # In CI mode, auto-enable second controller if secrets are present and not explicitly disabled
+  if [[ ${CI_MODE} == "true" && ${CLI_ACTION:-} != --up && -z ${INSTALL_GITHUB_SECOND_CTRL:-} ]]; then
+    if pac_secrets_complete second; then
+      INSTALL_GITHUB_SECOND_CTRL=true
+    fi
   fi
   [[ ${INSTALL_GITHUB_SECOND_CTRL} == "false" || ${INSTALL_GITHUB_SECOND_CTRL} == "" ]] || run_with_hooks install-github-second-ctrl install_github_second_ctrl
 
@@ -998,7 +957,9 @@ build_component_menu() {
   echo "Forgejo"
   echo "PostgreSQL"
   [[ -n ${INSTALL_CUSTOM_OBJECT:-} ]] && echo "Custom Objects"
-  [[ -n ${PAC_PASS_SECOND_FOLDER:-} || -n ${PAC_SECOND_SECRET_FOLDER:-} ]] && echo "GitHub Second Controller"
+  if pac_secrets_complete second; then
+    echo "GitHub Second Controller"
+  fi
 }
 
 # Get pre-selected items based on current INSTALL_* vars
@@ -1190,11 +1151,6 @@ execute_action() {
     echo "kubectl exec -it deployment/pipelines-as-code-controller -- bash"
     exit
     ;;
-  --second-secret)
-    PAC_PASS_SECOND_FOLDER=${CLI_VALUE}
-    run_with_hooks install-github-second-ctrl install_github_second_ctrl
-    exit
-    ;;
   --show-config)
     show_config
     exit
@@ -1243,16 +1199,21 @@ execute_action() {
   --configure-pac-target)
     export KUBECONFIG=$1
     export PAC_CONTROLLER_TARGET_NS=$2
-    if [[ -d ~/.password-store/$3 ]]; then
-      export PAC_PASS_SECRET_FOLDER=$3
-      smee_url=$(pass show ${PAC_PASS_SECRET_FOLDER}/smee)
-    elif [[ -d $3 ]]; then
-      export PAC_SECRET_FOLDER=$3
-      smee_url=$(cat ${PAC_SECRET_FOLDER}/smee)
-    else
-      echo "Cannot find $3 folder or ~/.password-store/$3 folder"
+    if ! pac_e2e_config_exists "$3"; then
+      echo "Cannot find E2E YAML config: $3" >&2
       exit 1
     fi
+    export PAC_E2E_CONFIG=$3
+    export CLI_E2E_CONFIG_EXPLICIT=true
+    if ! pac_yaml_parser >/dev/null 2>&1; then
+      echo "Error: yq (or python3 with PyYAML) is required to read ${PAC_E2E_CONFIG}." >&2
+      exit 1
+    fi
+    if ! pac_secrets_complete primary; then
+      echo "Error: cannot read complete GitHub App credentials from ${PAC_E2E_CONFIG}; existing cluster secrets were left unchanged." >&2
+      exit 1
+    fi
+    smee_url=$(get_smee_url)
     run_with_hooks configure-pac configure_pac --no-ingress
     if [[ "${USE_NODEPORT_WEBHOOK}" != "true" ]]; then
       show_step "Creating gosmee service in namespace gosmee"

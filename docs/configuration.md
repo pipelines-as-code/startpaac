@@ -24,12 +24,8 @@ the `/tmp/save` replay directory.
 # Path to your pipelines-as-code checkout (auto-detected if unset)
 PAC_DIR=~/go/src/github.com/tektoncd/pipelines-as-code
 
-# Secrets via password-store (pass)
-# Folder structure: github-application-id, github-private-key, smee, webhook.secret
-PAC_PASS_SECRET_FOLDER=github/apps/my-app
-
-# Or secrets as plain text files (same structure as above)
-PAC_SECRET_FOLDER=~/path/to/secrets
+# Path to your Pipelines-as-Code E2E YAML config file
+PAC_E2E_CONFIG=~/.local/share/startpaac/e2e-config.yaml
 
 # Where Kind runs: "local" or a remote hostname
 TARGET_HOST=local
@@ -50,32 +46,33 @@ TARGET_BIND_IP=192.168.1.5          # comma-separated for multiple IPs
 
 ## Secrets management
 
-Secrets are the GitHub App credentials needed by PAC. You need four files:
+Secrets are stored in the same YAML configuration file used by Pipelines-as-Code
+E2E tests (`test/e2e-config.yaml.example`), configured via `PAC_E2E_CONFIG` (in
+the environment or `~/.config/startpaac/config`) or `--e2e-config FILE|pass:<entry>`:
 
-- `github-application-id` -- your GitHub App ID
-- `github-private-key` -- the app's private key
-- `smee` -- your smee.io or hook.pipelinesascode.com webhook URL
-- `webhook.secret` -- the shared webhook secret
-
-### Using pass
-
-Set `PAC_PASS_SECRET_FOLDER` in your config to the pass folder path:
-
-```
-github/apps/my-app
-├── github-application-id
-├── github-private-key
-├── smee
-└── webhook.secret
+```shell
+PAC_E2E_CONFIG=./test/e2e-config.yaml ./startpaac --ci -a
+# or directly from password-store (never stored plaintext on disk)
+PAC_E2E_CONFIG=pass:pac/e2e-config ./startpaac --up
+# or via CLI flag
+./startpaac --e2e-config pass:pac/e2e-config --up
 ```
 
-### Using plain text files
+Requires `yq` (or `python3` with `PyYAML`). startpaac reads:
 
-Set `PAC_SECRET_FOLDER` to a directory with the same structure, files in plain text.
+- Primary controller secrets: `github.application_id`, `github.private_key`,
+  `common.webhook_secret`, and `github.smee_url`.
+- Second controller (GHE) secrets: `github_enterprise.application_id`,
+  `github_enterprise.private_key`, `github_enterprise.webhook_secret`,
+  `github_enterprise.smee_url`, and `github_enterprise.api_url` (normalized to
+  a bare hostname for `PAC_GITHUB_SECOND_HOSTNAME` when unset).
+- Forgejo sample webhook secret: `common.webhook_secret` for
+  `PAC_WEBHOOK_SECRET` when unset.
 
-If both backends are configured, set `PAC_SECRET_STORAGE` to `pass` or `folder`
-to select which one startpaac uses. The guided GitHub App setup saves this
-selection automatically.
+In `--ci` mode (for legacy install actions like `-a`, not `--up`), the second
+controller is automatically enabled when `github_enterprise` credentials are
+present in `PAC_E2E_CONFIG` and `INSTALL_GITHUB_SECOND_CTRL` is unset. Explicit
+environment variables take precedence over YAML values.
 
 ### Automatic GitHub App creation
 
@@ -98,9 +95,8 @@ The guided flow:
 3. Opens your browser on GitHub's [App Manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest);
    a small local Python server receives the redirect and exchanges the
    temporary code for the app credentials.
-4. Stores the credentials in your configured `pass` folder, or as plain files
-   in `~/.local/share/startpaac/secrets` (persisted as `PAC_SECRET_FOLDER` in
-   your config).
+4. Stores the credentials in `PAC_E2E_CONFIG` (defaulting to
+   `~/.local/share/startpaac/e2e-config.yaml`, persisted in your config).
 5. Shows the app installation URL — install the app on the repositories you
    want to use with PAC.
 6. Offers to run gosmee as a persistent user service to forward webhooks.
@@ -123,10 +119,11 @@ printed instead.
 
 ### Second GitHub controller
 
-Set `PAC_PASS_SECOND_FOLDER` (same structure as above) and use
-`--github-second-ctrl` / `--second-secret=SECRET`.
-For GitHub Enterprise, also set `PAC_GITHUB_SECOND_HOSTNAME` to the instance
-hostname, such as `ghe.example.com`. startpaac adds this hostname to the second
+Provide `github_enterprise` credentials in `PAC_E2E_CONFIG` (`--e2e-config`)
+and use `--github-second-ctrl`.
+For GitHub Enterprise, `PAC_GITHUB_SECOND_HOSTNAME` is automatically derived
+from `github_enterprise.api_url` (or can be set explicitly to a bare hostname
+such as `ghe.example.com`). startpaac adds this hostname to the second
 controller's trusted provider list so repository webhooks can authenticate
 before a GitHub App request has been received.
 
@@ -159,12 +156,12 @@ Component selections are saved to `~/.config/startpaac/preferences.json` when yo
 If you have PAC already installed (e.g. via the OpenShift operator):
 
 ```shell
-./startpaac --configure-pac-target $KUBECONFIG $TARGET_NAMESPACE $DIRECTORY_OR_PASS_FOLDER
+./startpaac --configure-pac-target $KUBECONFIG $TARGET_NAMESPACE $E2E_CONFIG_YAML
 ```
 
 - `$KUBECONFIG` -- kubeconfig for the cluster
 - `$TARGET_NAMESPACE` -- namespace where PAC is installed (e.g. `openshift-pipelines`)
-- `$DIRECTORY_OR_PASS_FOLDER` -- secret folder (plain text dir or pass folder)
+- `$E2E_CONFIG_YAML` -- path to a Pipelines-as-Code E2E YAML config file
 
 ## Hooks
 

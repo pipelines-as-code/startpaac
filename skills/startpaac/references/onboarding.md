@@ -44,13 +44,11 @@ For a new config, the essential local settings are:
 ```sh
 TARGET_HOST=local
 PAC_DIR=/absolute/path/to/pipelines-as-code
-PAC_SECRET_FOLDER=/absolute/path/to/app-secrets
+PAC_E2E_CONFIG=/absolute/path/to/e2e-config.yaml
 ```
 
-For an existing config, identify the smallest relevant edit. Use
-`PAC_PASS_SECRET_FOLDER` for a password-store entry. If both backends are
-configured and the intended backend differs from the one startpaac selects,
-use `PAC_SECRET_STORAGE=folder` or `PAC_SECRET_STORAGE=pass` to select it.
+For an existing config, identify the smallest relevant edit. You can also pass
+`--e2e-config FILE` on any command to override `PAC_E2E_CONFIG`.
 
 ## Cluster and kubeconfig
 

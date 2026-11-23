@@ -248,10 +248,22 @@ check_tools() {
       return 1
     fi
   done
-  if [[ -n ${PAC_PASS_SECRET_FOLDER:-""} ]]; then
-    if ! command -v pass &>/dev/null; then
-      echo "Error: pass is not installed or not in PATH and you have the PAC_PASS_SECRET_FOLDER variable set."
-      echo "Use PAC_SECRET_FOLDER instead if you want a folder instead of pass."
+  if [[ -n ${PAC_E2E_CONFIG:-""} ]]; then
+    if pac_e2e_config_is_pass "${PAC_E2E_CONFIG}"; then
+      if ! command -v pass &>/dev/null; then
+        echo "Error: pass is not installed or not in PATH and PAC_E2E_CONFIG uses pass: (${PAC_E2E_CONFIG})."
+        return 1
+      fi
+      if ! pac_e2e_config_exists "${PAC_E2E_CONFIG}"; then
+        echo "Error: PAC_E2E_CONFIG pass entry not readable: ${PAC_E2E_CONFIG#pass:}"
+        return 1
+      fi
+    elif [[ ! -f ${PAC_E2E_CONFIG} ]]; then
+      echo "Error: PAC_E2E_CONFIG file not found: ${PAC_E2E_CONFIG}"
+      return 1
+    fi
+    if ! pac_yaml_parser >/dev/null 2>&1; then
+      echo "Error: yq (or python3 with PyYAML) is required to read PAC_E2E_CONFIG (${PAC_E2E_CONFIG})."
       return 1
     fi
   fi
@@ -272,6 +284,105 @@ require_tool() {
 is_provider_hostname() {
   local hostname=${1:-}
   [[ ${hostname} =~ ^[[:alnum:]]([[:alnum:].-]*[[:alnum:]])?$ ]]
+}
+
+# Extract a bare provider hostname from a URL or host string.
+# Prints nothing when the result is not a valid provider hostname.
+normalize_provider_hostname() {
+  local value=${1:-}
+  value=${value#https://}
+  value=${value#http://}
+  value=${value%%/*}
+  value=${value%%:*}
+  if is_provider_hostname "${value}"; then
+    printf '%s\n' "${value}"
+  fi
+}
+
+# Detect an available YAML parser for PAC_E2E_CONFIG files.
+pac_yaml_parser() {
+  if command -v yq >/dev/null 2>&1; then
+    local ver
+    ver=$(yq --version 2>&1 || true)
+    if [[ ${ver} == *mikefarah* || ${ver} == *"version v4"* || ${ver} == *"version 4"* ]]; then
+      echo yq-go
+    else
+      echo yq-py
+    fi
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
+    echo python
+    return 0
+  fi
+  return 1
+}
+
+# Return 0 when the config specifier points to a password-store entry (pass:<entry>).
+pac_e2e_config_is_pass() {
+  [[ ${1:-} == pass:?* ]]
+}
+
+# Return 0 when the PAC_E2E_CONFIG file or pass:<entry> exists and is readable.
+pac_e2e_config_exists() {
+  local target=${1:-${PAC_E2E_CONFIG:-}}
+  [[ -n ${target} ]] || return 1
+  if pac_e2e_config_is_pass "${target}"; then
+    command -v pass >/dev/null 2>&1 || return 1
+    pass show "${target#pass:}" >/dev/null 2>&1
+    return $?
+  fi
+  [[ -f ${target} ]]
+}
+
+# Stream raw YAML bytes from a file or pass:<entry>.
+pac_e2e_config_stream() {
+  local target=${1:-${PAC_E2E_CONFIG:-}}
+  [[ -n ${target} ]] || return 1
+  if pac_e2e_config_is_pass "${target}"; then
+    command -v pass >/dev/null 2>&1 || return 1
+    pass show "${target#pass:}" 2>/dev/null
+  else
+    [[ -f ${target} ]] || return 1
+    cat "${target}" 2>/dev/null
+  fi
+}
+
+# Read a scalar value from a PAC E2E YAML config file or pass:<entry> (<section>.<field>).
+# Prints nothing when the field is missing, null, or empty.
+# Returns nonzero if the source is unreadable or the YAML parser fails.
+pac_e2e_config_read() {
+  local section=$1 field=$2 file=${3:-${PAC_E2E_CONFIG:-}}
+  [[ -n ${file} ]] || return 1
+  local parser
+  parser=$(pac_yaml_parser) || return 1
+  local expr=".${section}.${field} | select(. != null and . != \"\")"
+  (
+    set -o pipefail
+    case ${parser} in
+    yq-go)
+      pac_e2e_config_stream "${file}" | yq eval -r "${expr}" - 2>/dev/null
+      ;;
+    yq-py)
+      pac_e2e_config_stream "${file}" | yq -r "${expr}" - 2>/dev/null
+      ;;
+    python)
+      pac_e2e_config_stream "${file}" | python3 -c '
+import sys, yaml
+data = yaml.safe_load(sys.stdin) or {}
+if not isinstance(data, dict):
+    sys.exit(0)
+sec = data.get(sys.argv[1])
+val = sec.get(sys.argv[2]) if isinstance(sec, dict) else None
+if val is not None and val != "":
+    sys.stdout.write(str(val))
+' "${section}" "${field}" 2>/dev/null
+      ;;
+    *)
+      return 1
+      ;;
+    esac
+  )
 }
 
 # Wrapper around gum confirm with bash fallback
@@ -302,60 +413,213 @@ _input() {
   fi
 }
 
-# Read one PAC secret key from pass or the plain text secret folder.
-# Optional second argument forces the storage: "pass", "folder" or "auto".
-# Prints nothing when the key is missing or unreadable.
+# Return 0 when the PAC_E2E_CONFIG file or pass:<entry> exists and parses as valid YAML.
+pac_e2e_config_valid() {
+  local file=${1:-${PAC_E2E_CONFIG:-}}
+  pac_e2e_config_exists "${file}" || return 1
+  pac_e2e_config_read common webhook_secret "${file}" >/dev/null
+}
+
+# Write primary GitHub App credentials from an output directory into a YAML config file
+# (mode 0600) or pass:<entry>, preserving existing sections when already present.
+pac_e2e_config_write_primary() {
+  local cfg_path=$1 outdir=$2
+  if pac_e2e_config_is_pass "${cfg_path}"; then
+    local entry=${cfg_path#pass:}
+    command -v pass >/dev/null 2>&1 || {
+      echo "Error: pass is required to write ${cfg_path}." >&2
+      return 1
+    }
+    local existing=""
+    existing=$(pass show "${entry}" 2>/dev/null || true)
+    if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
+      printf '%s' "${existing}" | python3 -c '
+import os, sys, yaml
+
+outdir = sys.argv[1]
+def read_key(name):
+    with open(os.path.join(outdir, name), "r", encoding="utf-8") as fh:
+        return fh.read()
+
+class LiteralStr(str):
+    pass
+
+def literal_representer(dumper, data):
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+
+yaml.add_representer(LiteralStr, literal_representer)
+
+loaded = yaml.safe_load(sys.stdin)
+data = loaded if isinstance(loaded, dict) else {}
+data.setdefault("common", {})
+data.setdefault("github", {})
+data["common"]["webhook_secret"] = read_key("webhook.secret").strip()
+data["github"]["application_id"] = read_key("github-application-id").strip()
+data["github"]["private_key"] = LiteralStr(read_key("github-private-key"))
+data["github"]["smee_url"] = read_key("smee").strip()
+yaml.dump(data, sys.stdout, sort_keys=False, default_flow_style=False)
+' "${outdir}" | pass insert -m -f "${entry}" >/dev/null
+      return $?
+    fi
+    if [[ -n ${existing} && $(pac_yaml_parser 2>/dev/null || true) == yq-go ]]; then
+      printf '%s' "${existing}" |
+        WEBHOOK_SECRET=$(tr -d '\r\n' <"${outdir}/webhook.secret") \
+        APP_ID=$(tr -d '\r\n' <"${outdir}/github-application-id") \
+        PRIV_KEY=$(cat "${outdir}/github-private-key") \
+        SMEE_URL=$(tr -d '\r\n' <"${outdir}/smee") \
+        yq eval '
+          .common.webhook_secret = strenv(WEBHOOK_SECRET) |
+          .github.application_id = strenv(APP_ID) |
+          .github.private_key = strenv(PRIV_KEY) |
+          .github.smee_url = strenv(SMEE_URL)
+        ' - | pass insert -m -f "${entry}" >/dev/null
+      return $?
+    fi
+    if [[ -n ${existing} ]]; then
+      echo "Error: PyYAML or Go yq is required to safely update existing ${cfg_path} without losing other sections." >&2
+      return 1
+    fi
+    python3 - "${outdir}" <<'PY' | pass insert -m -f "${entry}" >/dev/null
+import os, sys
+outdir = sys.argv[1]
+def read_key(name):
+    with open(os.path.join(outdir, name), "r", encoding="utf-8") as fh:
+        return fh.read()
+indented = "\n".join("    " + line for line in read_key("github-private-key").splitlines())
+sys.stdout.write(
+    f"common:\n"
+    f"  webhook_secret: {read_key('webhook.secret').strip()!r}\n"
+    f"github:\n"
+    f"  application_id: {read_key('github-application-id').strip()!r}\n"
+    f"  private_key: |\n{indented}\n"
+    f"  smee_url: {read_key('smee').strip()!r}\n"
+)
+PY
+    return $?
+  fi
+  (
+    umask 077
+    mkdir -p "$(dirname "${cfg_path}")"
+    if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
+      python3 - "${cfg_path}" "${outdir}" <<'PY'
+import os, sys, yaml
+
+cfg_path, outdir = sys.argv[1], sys.argv[2]
+def read_key(name):
+    with open(os.path.join(outdir, name), "r", encoding="utf-8") as fh:
+        return fh.read()
+
+class LiteralStr(str):
+    pass
+
+def literal_representer(dumper, data):
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+
+yaml.add_representer(LiteralStr, literal_representer)
+
+data = {}
+if os.path.exists(cfg_path) and os.path.getsize(cfg_path) > 0:
+    with open(cfg_path, "r", encoding="utf-8") as fh:
+        loaded = yaml.safe_load(fh)
+        if isinstance(loaded, dict):
+            data = loaded
+data.setdefault("common", {})
+data.setdefault("github", {})
+data["common"]["webhook_secret"] = read_key("webhook.secret").strip()
+data["github"]["application_id"] = read_key("github-application-id").strip()
+data["github"]["private_key"] = LiteralStr(read_key("github-private-key"))
+data["github"]["smee_url"] = read_key("smee").strip()
+
+fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+os.fchmod(fd, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    yaml.dump(data, fh, sort_keys=False, default_flow_style=False)
+PY
+      return $?
+    fi
+
+    if [[ -s ${cfg_path} ]]; then
+      if [[ $(pac_yaml_parser 2>/dev/null || true) == yq-go ]]; then
+        chmod 600 "${cfg_path}"
+        WEBHOOK_SECRET=$(tr -d '\r\n' <"${outdir}/webhook.secret") \
+          APP_ID=$(tr -d '\r\n' <"${outdir}/github-application-id") \
+          PRIV_KEY=$(cat "${outdir}/github-private-key") \
+          SMEE_URL=$(tr -d '\r\n' <"${outdir}/smee") \
+          yq eval -i '
+            .common.webhook_secret = strenv(WEBHOOK_SECRET) |
+            .github.application_id = strenv(APP_ID) |
+            .github.private_key = strenv(PRIV_KEY) |
+            .github.smee_url = strenv(SMEE_URL)
+          ' "${cfg_path}"
+        chmod 600 "${cfg_path}"
+        return $?
+      fi
+      echo "Error: PyYAML or Go yq is required to safely update existing ${cfg_path} without losing other sections." >&2
+      return 1
+    fi
+
+    python3 - "${cfg_path}" "${outdir}" <<'PY'
+import os, sys
+
+cfg_path, outdir = sys.argv[1], sys.argv[2]
+def read_key(name):
+    with open(os.path.join(outdir, name), "r", encoding="utf-8") as fh:
+        return fh.read()
+
+app_id = read_key("github-application-id").strip()
+priv_key = read_key("github-private-key")
+webhook_secret = read_key("webhook.secret").strip()
+smee_url = read_key("smee").strip()
+indented = "\n".join("    " + line for line in priv_key.splitlines())
+content = (
+    f"common:\n"
+    f"  webhook_secret: {webhook_secret!r}\n"
+    f"github:\n"
+    f"  application_id: {app_id!r}\n"
+    f"  private_key: |\n{indented}\n"
+    f"  smee_url: {smee_url!r}\n"
+)
+fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+os.fchmod(fd, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    fh.write(content)
+PY
+  )
+}
+
+# Read one PAC secret key from PAC_E2E_CONFIG.
+# Optional second argument selects scope: "primary" (default) or "second".
+# Returns nonzero when PAC_E2E_CONFIG is missing or the YAML parser fails.
 pac_secret_read() {
-  local key=$1 storage=${2:-auto}
-  if [[ ${storage} == auto ]]; then
-    storage=$(pac_secret_storage)
-    [[ -n ${storage} ]] || return 0
-  fi
-  if [[ ${storage} == pass && -n ${PAC_PASS_SECRET_FOLDER:-} ]]; then
-    pass show "${PAC_PASS_SECRET_FOLDER}/${key}" 2>/dev/null || true
-  elif [[ ${storage} == folder && -n ${PAC_SECRET_FOLDER:-} ]]; then
-    cat "${PAC_SECRET_FOLDER}/${key}" 2>/dev/null || true
-  fi
-  return 0
-}
-
-# Resolve the configured secret backend. An explicit preference wins; otherwise
-# prefer a complete pass backend and fall back to a complete plain folder.
-pac_secret_storage() {
-  local preferred=${PAC_SECRET_STORAGE:-}
-  if [[ ${preferred} == pass && -n ${PAC_PASS_SECRET_FOLDER:-} ]] && command -v pass &>/dev/null; then
-    echo pass
-    return 0
-  fi
-  if [[ ${preferred} == folder && -n ${PAC_SECRET_FOLDER:-} ]]; then
-    echo folder
-    return 0
-  fi
-  if [[ -n ${PAC_PASS_SECRET_FOLDER:-} ]] && command -v pass &>/dev/null && pac_secrets_complete pass; then
-    echo pass
-    return 0
-  fi
-  if [[ -n ${PAC_SECRET_FOLDER:-} ]] && pac_secrets_complete folder; then
-    echo folder
-    return 0
-  fi
-  if [[ -n ${PAC_PASS_SECRET_FOLDER:-} ]] && command -v pass &>/dev/null; then
-    echo pass
-  elif [[ -n ${PAC_SECRET_FOLDER:-} ]]; then
-    echo folder
+  local key=$1 scope=${2:-primary}
+  [[ -n ${PAC_E2E_CONFIG:-} ]] || return 1
+  if [[ ${scope} == second ]]; then
+    case ${key} in
+    github-application-id) pac_e2e_config_read github_enterprise application_id ;;
+    github-private-key) pac_e2e_config_read github_enterprise private_key ;;
+    webhook.secret) pac_e2e_config_read github_enterprise webhook_secret ;;
+    smee) pac_e2e_config_read github_enterprise smee_url ;;
+    *) return 1 ;;
+    esac
+  else
+    case ${key} in
+    github-application-id) pac_e2e_config_read github application_id ;;
+    github-private-key) pac_e2e_config_read github private_key ;;
+    webhook.secret) pac_e2e_config_read common webhook_secret ;;
+    smee) pac_e2e_config_read github smee_url ;;
+    *) return 1 ;;
+    esac
   fi
 }
 
-# Return 0 when all GitHub App credentials are present and non-empty.
-# Optional first argument scopes the check to one storage (pass|folder|auto).
+# Return 0 when all GitHub App credentials are present and non-empty in PAC_E2E_CONFIG.
+# Optional argument selects scope: "primary" (default) or "second".
 pac_secrets_complete() {
-  local storage=${1:-auto} key
-  if [[ ${storage} == auto ]]; then
-    storage=$(pac_secret_storage)
-    [[ -n ${storage} ]] || return 1
-  fi
+  local scope=${1:-primary} key val
+  pac_e2e_config_exists "${PAC_E2E_CONFIG:-}" || return 1
   for key in github-application-id github-private-key webhook.secret; do
-    [[ -n "$(pac_secret_read "${key}" "${storage}")" ]] || return 1
+    val=$(pac_secret_read "${key}" "${scope}") || return 1
+    [[ -n ${val} ]] || return 1
   done
   return 0
 }
@@ -366,7 +630,8 @@ xml_escape() {
 
 # Print the configured smee/relay URL (empty when unset)
 get_smee_url() {
-  pac_secret_read smee
+  local scope=${1:-primary}
+  pac_secret_read smee "${scope}" || true
 }
 
 # Wrapper around gum choose --no-limit with bash fallback
@@ -720,12 +985,9 @@ export_hook_environment() {
         PAC_DEBUG_IMAGE
         PAC_DIR
         PAC_DOMAIN
+        PAC_E2E_CONFIG
         PAC_GITHUB_SECOND_HOSTNAME
         PAC_IMAGE_NONROOT
-        PAC_PASS_SECOND_FOLDER
-        PAC_PASS_SECRET_FOLDER
-        PAC_SECOND_SECRET_FOLDER
-        PAC_SECRET_FOLDER
         PAC_WEBHOOK_NODEPORT
         PAC_WEBHOOK_SECRET
         PAC_WEB_URL

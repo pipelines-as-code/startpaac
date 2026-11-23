@@ -70,10 +70,10 @@ _arguments -C \
     '--install-registry[Install Docker registry]' \
     '--setup-forgejo-sample[Create sample Forgejo repositories]' \
     '--debug-image[Use a debug image]' \
-    '--second-secret[Set the secret for second controller]:secret:->pass_profiles' \
+    '--e2e-config[Path to PAC E2E YAML config]:file:_files' \
     '--setup-github-app[Create a GitHub App and store its credentials]' \
     '--configure-pac[Configure PAC]' \
-    '--configure-pac-target[Configure PAC on an existing cluster]:kubeconfig:_files:namespace: :secrets directory:_files -/' \
+    '--configure-pac-target[Configure PAC on an existing cluster]:kubeconfig:_files:namespace: :e2e config:_files' \
     '--show-config[Show config]' \
     '*:argument:->args' && ret=0
 

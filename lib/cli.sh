@@ -34,15 +34,15 @@ help() {
     '  -F, --all-but-forge          Install without Kind or Forgejo' \
     '  -H, --all-github-second-no-forgejo  Recreate with a second GitHub controller' \
     '  -S, --github-second-ctrl     Deploy second GitHub controller' \
-    '  --second-secret FOLDER       Deploy second controller using pass folder' \
     '  --configure-pac              Configure PAC' \
-    '  --configure-pac-target KUBECONFIG NAMESPACE SECRETS  Configure existing cluster' \
+    '  --configure-pac-target KUBECONFIG NAMESPACE E2E_CONFIG  Configure existing cluster' \
     '  --debug-image                Deploy PAC with debug image' \
     '  -s, --sync-kubeconfig        Sync kubeconfig from remote target' \
     '  -G, --start-user-gosmee      Start user webhook forwarder' \
     '  --setup-github-app           Interactive GitHub App creation' \
     '  --show-config                Show configuration' \
     '' 'Other options:' \
+    '  --e2e-config FILE            Read PAC secrets and settings from an E2E YAML config' \
     '  -O, --scale-down NAME        Scale down a component after deployment' \
     '  -i, --menu, --interactive    Force component menu' \
     '  -R, --reset-preferences      Remove saved component preferences' \
@@ -75,6 +75,8 @@ cli_parse() {
   CLI_NON_INTERACTIVE_OVERRIDE=${NON_INTERACTIVE-}
   CLI_CI_OVERRIDE=${CI_MODE-}
   CLI_MENU_OVERRIDE=${FORCE_INTERACTIVE-}
+  CLI_E2E_CONFIG_OVERRIDE=
+  export CLI_E2E_CONFIG_EXPLICIT=false
   NON_INTERACTIVE=${NON_INTERACTIVE:-false}
   CI_MODE=${CI_MODE:-false}
   FORCE_INTERACTIVE=${FORCE_INTERACTIVE:-false}
@@ -96,7 +98,7 @@ cli_parse() {
       value=${arg#*=}
       arg=${arg%%=*}
       case ${arg} in
-      --output | --deploy-component | --scale-down | --second-secret | --install-skills) set -- "${value}" "$@" ;;
+      --output | --deploy-component | --scale-down | --install-skills | --e2e-config) set -- "${value}" "$@" ;;
       *) cli_usage_error "${arg} does not accept an inline value." ;;
       esac
     elif [[ ${arg} == -?* && ${arg} != --* && ${#arg} -gt 2 ]]; then
@@ -132,6 +134,13 @@ cli_parse() {
     -i | --menu | --interactive)
       FORCE_INTERACTIVE=true
       CLI_MENU_OVERRIDE=true
+      continue
+      ;;
+    --e2e-config)
+      [[ $# -gt 0 && -n $1 && $1 != -* ]] || cli_usage_error '--e2e-config requires a file path.'
+      CLI_E2E_CONFIG_OVERRIDE=$1
+      export CLI_E2E_CONFIG_EXPLICIT=true
+      shift
       continue
       ;;
     -O | --scale-down)
@@ -174,16 +183,14 @@ cli_parse() {
       *) cli_usage_error '--install-skills requires agents, claude, or all.' ;;
       esac
       ;;
-    --deploy-component | --second-secret)
+    --deploy-component)
       [[ $# -gt 0 && $1 != -* ]] || cli_usage_error "${arg} requires a value."
       value=$1
       shift
-      if [[ ${arg} == --deploy-component ]]; then
-        case ${value} in controller | watcher | webhook) ;; *) cli_usage_error 'Invalid deployment component.' ;; esac
-      fi
+      case ${value} in controller | watcher | webhook) ;; *) cli_usage_error 'Invalid deployment component.' ;; esac
       ;;
     --configure-pac-target)
-      [[ $# -ge 3 ]] || cli_usage_error '--configure-pac-target requires kubeconfig, namespace, and secrets.'
+      [[ $# -ge 3 ]] || cli_usage_error '--configure-pac-target requires kubeconfig, namespace, and e2e-config.'
       CLI_EXTRA=("$1" "$2" "$3")
       shift 3
       value=
@@ -300,7 +307,7 @@ cli_cleanup() {
 }
 
 cli_describe() {
-  CLI_DATA='{"actions":[{"flag":"--up","effect":"Create or reuse local Kind; deploy core, PAC, and Dashboard"},{"flag":"--install-paac","effect":"Build, deploy, and configure PAC"},{"flag":"--deploy-component","argument":"controller|watcher|webhook","effect":"Build and deploy one PAC component"},{"flag":"--stop-kind","effect":"Delete Kind and its kubeconfig","destructive":true},{"flag":"--doctor","effect":"Inspect setup prerequisites"},{"flag":"--status","effect":"Inspect component readiness and forwarding state"},{"flag":"--describe","effect":"Describe agent interfaces without loading configuration"}],"options":{"--plan":"Read-only preview of a core action","--non-interactive":"No prompts, browser, or implicit service changes","--output":"text|json"},"examples":["startpaac --up --plan --output json","startpaac --up --non-interactive --output json","startpaac -c watcher --non-interactive --output json","startpaac --status --output json"]}'
+  CLI_DATA='{"actions":[{"flag":"--up","effect":"Create or reuse local Kind; deploy core, PAC, and Dashboard"},{"flag":"--install-paac","effect":"Build, deploy, and configure PAC"},{"flag":"--deploy-component","argument":"controller|watcher|webhook","effect":"Build and deploy one PAC component"},{"flag":"--stop-kind","effect":"Delete Kind and its kubeconfig","destructive":true},{"flag":"--doctor","effect":"Inspect setup prerequisites"},{"flag":"--status","effect":"Inspect component readiness and forwarding state"},{"flag":"--describe","effect":"Describe agent interfaces without loading configuration"}],"options":{"--plan":"Read-only preview of a core action","--non-interactive":"No prompts, browser, or implicit service changes","--output":"text|json","--e2e-config":"Read PAC secrets and settings from an E2E YAML config"},"examples":["startpaac --up --plan --output json","startpaac --up --non-interactive --output json","startpaac -c watcher --non-interactive --output json","startpaac --status --output json"]}'
 }
 
 cli_check_docker_target() {
@@ -352,8 +359,14 @@ cli_preflight() {
   case ${CLI_ACTION} in
   --up | --doctor | --install-paac)
     ok=false
+    pac_e2e_config_exists "${PAC_E2E_CONFIG:-}" && ok=true
+    cli_check e2e_config_file "${ok}" "PAC_E2E_CONFIG exists: ${ok}" "Set PAC_E2E_CONFIG (or pass --e2e-config FILE or pass:<entry>) to a readable E2E YAML config."
+    ok=false
+    pac_yaml_parser >/dev/null 2>&1 && ok=true
+    cli_check tool_yaml_parser "${ok}" "YAML parser (yq or python3+PyYAML): ${ok}" "Install yq (or python3 with PyYAML) to read PAC_E2E_CONFIG."
+    ok=false
     pac_secrets_complete && [[ -n $(get_smee_url) ]] && ok=true
-    cli_check credentials "${ok}" 'Reusable GitHub App credentials and relay URL are required.' 'Configure PAC_SECRET_FOLDER or PAC_PASS_SECRET_FOLDER; unlock pass interactively if needed, or run --setup-github-app separately.'
+    cli_check credentials "${ok}" 'Reusable GitHub App credentials and relay URL are required.' 'Configure PAC_E2E_CONFIG (--e2e-config) with GitHub App credentials and smee_url, or run --setup-github-app separately.'
     ;;
   esac
   CLI_CLUSTER_EXISTS=false
@@ -601,7 +614,7 @@ cli_main() {
   if [[ ${CLI_MANAGED} == true ]]; then
     export STARTPAAC_CREATE_CONFIG=false
   fi
-  local requested_noninteractive=${CLI_NON_INTERACTIVE_OVERRIDE} requested_ci=${CLI_CI_OVERRIDE} requested_menu=${CLI_MENU_OVERRIDE}
+  local requested_noninteractive=${CLI_NON_INTERACTIVE_OVERRIDE} requested_ci=${CLI_CI_OVERRIDE} requested_menu=${CLI_MENU_OVERRIDE} requested_e2e_config=${CLI_E2E_CONFIG_OVERRIDE}
   [[ -n ${requested_noninteractive} ]] || unset NON_INTERACTIVE
   [[ -n ${requested_ci} ]] || unset CI_MODE
   [[ -n ${requested_menu} ]] || unset FORCE_INTERACTIVE
@@ -609,11 +622,29 @@ cli_main() {
   NON_INTERACTIVE=${requested_noninteractive:-${NON_INTERACTIVE:-false}}
   CI_MODE=${requested_ci:-${CI_MODE:-false}}
   FORCE_INTERACTIVE=${requested_menu:-${FORCE_INTERACTIVE:-false}}
+  [[ -z ${requested_e2e_config} ]] || PAC_E2E_CONFIG=${requested_e2e_config}
+  if [[ -n ${PAC_E2E_CONFIG:-} ]]; then
+    if ! pac_e2e_config_is_pass "${PAC_E2E_CONFIG}"; then
+      PAC_E2E_CONFIG=${PAC_E2E_CONFIG/#\~/${HOME}}
+      [[ ${PAC_E2E_CONFIG} == /* ]] || PAC_E2E_CONFIG=${PWD}/${PAC_E2E_CONFIG}
+    fi
+    export PAC_E2E_CONFIG
+  fi
+  if [[ ${CLI_ACTION} == --configure-pac-target && ${#CLI_EXTRA[@]} -ge 3 ]]; then
+    local target_secrets=${CLI_EXTRA[2]}
+    if ! pac_e2e_config_is_pass "${target_secrets}"; then
+      target_secrets=${target_secrets/#\~/${HOME}}
+      [[ ${target_secrets} == /* ]] || target_secrets=${PWD}/${target_secrets}
+    fi
+    CLI_EXTRA[2]=${target_secrets}
+  fi
   cli_validate
   cli_require_jq
   initialize_runtime
   if [[ ${CLI_MANAGED} == true ]]; then
-    export PASSWORD_STORE_GPG_OPTS="${PASSWORD_STORE_GPG_OPTS:-} --batch --no-tty --pinentry-mode error"
+    if pac_e2e_config_is_pass "${PAC_E2E_CONFIG:-}"; then
+      export PASSWORD_STORE_GPG_OPTS="${PASSWORD_STORE_GPG_OPTS:-} --batch --no-tty --pinentry-mode error"
+    fi
     if [[ ${CLI_ACTION} == --setup-github-app || ${FORCE_INTERACTIVE} == true ]]; then
       cli_error requires_interaction 'This action requires an interactive session.' 'Run it separately in a terminal without --non-interactive.'
       exit 1
@@ -621,7 +652,6 @@ cli_main() {
     [[ ${KUBECONFIG} == /* || ${KUBECONFIG} == *:* ]] || KUBECONFIG=${PWD}/${KUBECONFIG}
     [[ -z ${HOOKS_DIR} || ${HOOKS_DIR} == /* ]] || HOOKS_DIR=${PWD}/${HOOKS_DIR}
     [[ -z ${PAC_DIR:-} || ${PAC_DIR} == /* ]] || PAC_DIR=${PWD}/${PAC_DIR}
-    [[ -z ${PAC_SECRET_FOLDER:-} || ${PAC_SECRET_FOLDER} == /* ]] || PAC_SECRET_FOLDER=${PWD}/${PAC_SECRET_FOLDER}
     cli_preflight
     case ${CLI_ACTION} in
     --up | --install-paac | --deploy-component | --stop-kind) cli_build_plan ;;
