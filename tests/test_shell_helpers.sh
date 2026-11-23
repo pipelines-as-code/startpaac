@@ -145,7 +145,7 @@ if python3 -c 'import yaml' >/dev/null 2>&1; then
   mkdir -p "${py_only_bin}"
   ln -sf "$(command -v python3)" "${py_only_bin}/python3"
   ln -sf "$(command -v cat)" "${py_only_bin}/cat"
-  for tool in tr mkdir chmod dirname; do
+  for tool in tr mkdir chmod dirname install; do
     ln -sf "$(command -v "${tool}")" "${py_only_bin}/${tool}"
   done
   py_val=$(PATH="${py_only_bin}" PAC_E2E_CONFIG="${e2e_cfg}" /bin/bash -c 'source "$1/lib/common.sh"; pac_secret_field primary webhook_secret' _ "${SP}")
@@ -240,7 +240,7 @@ if python3 -c 'import sys' >/dev/null 2>&1; then
   printf '#!/bin/sh\necho "yq 3.4.3"\n' >"${pyq_bin}/yq"
   chmod +x "${pyq_bin}/yq"
   printf 'raise ImportError("PyYAML unavailable for this test")\n' >"${poison}/yaml.py"
-  for tool in python3 cat tr mkdir chmod dirname; do
+  for tool in python3 cat tr mkdir chmod dirname install; do
     ln -sf "$(command -v "${tool}")" "${pyq_bin}/${tool}"
   done
   pyq_cfg="${TESTTMP}/python-yq.yaml"

@@ -625,6 +625,10 @@ pac_e2e_config_write_primary() {
       if [[ -w ${cfg_path} ]]; then
         chmod 600 "${cfg_path}" || return 1
       fi
+    else
+      # An explicit mode is not redundant with the umask: a default ACL on the
+      # directory can grant access the umask alone would not.
+      install -m 600 /dev/null "${cfg_path}" || return 1
     fi
     rendered=$(printf '%s' "${existing}" | _pac_e2e_config_render_primary "${cfg_path}" "${outdir}" && printf x) || return 1
     rendered=${rendered%x}
