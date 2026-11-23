@@ -792,6 +792,18 @@ class AgentCliTest(unittest.TestCase):
             any("create" in cmd and "pipelines-as-code-secret" in cmd for cmd in self.commands())
         )
 
+        # Positional config must take precedence even when the configured PAC_E2E_CONFIG is missing.
+        (self.base / "commands").unlink(missing_ok=True)
+        missing_env = dict(self.env, PAC_E2E_CONFIG=str(self.base / "stale-missing.yaml"))
+        result = subprocess.run(
+            [str(ROOT / "startpaac"), "--configure-pac-target", str(kubeconfig), "pipelines-as-code", cfg.name],
+            cwd=str(self.base), env=missing_env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(
+            any("create" in cmd and "pipelines-as-code-secret" in cmd for cmd in self.commands())
+        )
+
         # Malformed YAML must fail nonzero and never delete pipelines-as-code-secret.
         (self.base / "commands").unlink(missing_ok=True)
         bad = self.base / "bad-target.yaml"

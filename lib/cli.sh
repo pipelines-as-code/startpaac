@@ -637,6 +637,8 @@ cli_main() {
       [[ ${target_secrets} == /* ]] || target_secrets=${PWD}/${target_secrets}
     fi
     CLI_EXTRA[2]=${target_secrets}
+    export PAC_E2E_CONFIG=${target_secrets}
+    export CLI_E2E_CONFIG_EXPLICIT=true
   fi
   cli_validate
   cli_require_jq
