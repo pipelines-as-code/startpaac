@@ -495,34 +495,35 @@ for sec, key in fields:
   )
 }
 
-# Write primary GitHub App credentials from an output directory into a YAML config file
-# (mode 0600) or pass:<entry>, preserving existing sections when already present.
-pac_e2e_config_write_primary() {
-  local cfg_path=$1 outdir=$2
-  if pac_e2e_config_is_pass "${cfg_path}"; then
-    local entry=${cfg_path#pass:}
-    command -v pass >/dev/null 2>&1 || {
-      echo "Error: pass is required to write ${cfg_path}." >&2
-      return 1
-    }
-    local store_dir=${PASSWORD_STORE_DIR:-${HOME}/.password-store}
-    local existing="" rendered=""
-    if [[ -f "${store_dir}/${entry}.gpg" ]]; then
-      if ! existing=$(pass show "${entry}" 2>/dev/null); then
-        echo "Error: existing pass entry '${entry}' could not be decrypted; aborting to avoid overwriting it." >&2
-        return 1
-      fi
-    else
-      existing=$(pass show "${entry}" 2>/dev/null || true)
-    fi
-    if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
-      rendered=$(printf '%s' "${existing}" | python3 -c '
+# Render the primary GitHub App credentials over the YAML content read on stdin and
+# print the merged document. Blank stdin means the target has no content yet; the
+# YAML parsers handle that case, and a parser-free fallback emits a fresh document.
+_pac_e2e_config_render_primary() {
+  local cfg_path=$1 outdir=$2 existing webhook_secret app_id priv_key smee_url parser
+  # The trailing "x" survives command substitution so newlines that belong to the
+  # document (|+ blocks) survive it too.
+  existing=$(cat && printf x)
+  existing=${existing%x}
+  # Read every credential up front: a missing or unreadable file must fail the
+  # render instead of silently producing an empty value downstream.
+  webhook_secret=$(tr -d '\r\n' <"${outdir}/webhook.secret") || return 1
+  app_id=$(tr -d '\r\n' <"${outdir}/github-application-id") || return 1
+  priv_key=$(cat "${outdir}/github-private-key" && printf x) || return 1
+  priv_key=${priv_key%x}
+  smee_url=$(tr -d '\r\n' <"${outdir}/smee") || return 1
+  parser=$(pac_yaml_parser 2>/dev/null || true)
+  # python-yq only proves that the yq wrapper runs, not that PATH's python3 can
+  # import PyYAML, so probe it before trusting the Python renderer.
+  if [[ ${parser} == python || ${parser} == yq-py ]] &&
+    ! python3 -c 'import yaml' >/dev/null 2>&1; then
+    parser=""
+  fi
+  case ${parser} in
+  python | yq-py)
+    printf '%s' "${existing}" |
+      WEBHOOK_SECRET=${webhook_secret} APP_ID=${app_id} PRIV_KEY=${priv_key} SMEE_URL=${smee_url} \
+      python3 -c '
 import os, sys, yaml
-
-outdir = sys.argv[1]
-def read_key(name):
-    with open(os.path.join(outdir, name), "r", encoding="utf-8") as fh:
-        return fh.read()
 
 class LiteralStr(str):
     pass
@@ -536,172 +537,135 @@ loaded = yaml.safe_load(sys.stdin)
 data = loaded if isinstance(loaded, dict) else {}
 data.setdefault("common", {})
 data.setdefault("github", {})
-data["common"]["webhook_secret"] = read_key("webhook.secret").strip()
-data["github"]["application_id"] = read_key("github-application-id").strip()
-data["github"]["private_key"] = LiteralStr(read_key("github-private-key"))
-data["github"]["smee_url"] = read_key("smee").strip()
+data["common"]["webhook_secret"] = os.environ["WEBHOOK_SECRET"]
+data["github"]["application_id"] = os.environ["APP_ID"]
+data["github"]["private_key"] = LiteralStr(os.environ["PRIV_KEY"])
+data["github"]["smee_url"] = os.environ["SMEE_URL"]
 yaml.dump(data, sys.stdout, sort_keys=False, default_flow_style=False)
-' "${outdir}") || return 1
-    elif [[ -n ${existing} && $(pac_yaml_parser 2>/dev/null || true) == yq-go ]]; then
-      rendered=$(printf '%s' "${existing}" |
-        WEBHOOK_SECRET=$(tr -d '\r\n' <"${outdir}/webhook.secret") \
-        APP_ID=$(tr -d '\r\n' <"${outdir}/github-application-id") \
-        PRIV_KEY=$(cat "${outdir}/github-private-key") \
-        SMEE_URL=$(tr -d '\r\n' <"${outdir}/smee") \
-        yq eval '
-          .common.webhook_secret = strenv(WEBHOOK_SECRET) |
-          .github.application_id = strenv(APP_ID) |
-          .github.private_key = strenv(PRIV_KEY) |
-          .github.smee_url = strenv(SMEE_URL)
-        ' -) || return 1
-    elif [[ -n ${existing} ]]; then
+' || return 1
+    ;;
+  yq-go)
+    printf '%s' "${existing}" |
+      WEBHOOK_SECRET=${webhook_secret} APP_ID=${app_id} PRIV_KEY=${priv_key} SMEE_URL=${smee_url} \
+      yq eval '
+        .common.webhook_secret = strenv(WEBHOOK_SECRET) |
+        .github.application_id = strenv(APP_ID) |
+        .github.private_key = strenv(PRIV_KEY) |
+        .github.smee_url = strenv(SMEE_URL)
+      ' - || return 1
+    ;;
+  *)
+    [[ -z ${existing} ]] || {
       echo "Error: PyYAML or Go yq is required to safely update existing ${cfg_path} without losing other sections." >&2
       return 1
-    else
-      rendered=$(python3 - "${outdir}" <<'PY'
-import os, sys
-outdir = sys.argv[1]
-def read_key(name):
-    with open(os.path.join(outdir, name), "r", encoding="utf-8") as fh:
-        return fh.read()
-indented = "\n".join("    " + line for line in read_key("github-private-key").splitlines())
+    }
+    # No parser at all: emit a fresh document. json.dumps keeps scalars valid
+    # YAML without pulling PyYAML in.
+    WEBHOOK_SECRET=${webhook_secret} APP_ID=${app_id} PRIV_KEY=${priv_key} SMEE_URL=${smee_url} \
+      python3 -c '
+import json, os, sys
+
+webhook_secret = os.environ["WEBHOOK_SECRET"]
+app_id = os.environ["APP_ID"]
+smee_url = os.environ["SMEE_URL"]
+indented = "\n".join("    " + line for line in os.environ["PRIV_KEY"].splitlines())
 sys.stdout.write(
-    f"common:\n"
-    f"  webhook_secret: {read_key('webhook.secret').strip()!r}\n"
-    f"github:\n"
-    f"  application_id: {read_key('github-application-id').strip()!r}\n"
+    "common:\n"
+    f"  webhook_secret: {json.dumps(webhook_secret)}\n"
+    "github:\n"
+    f"  application_id: {json.dumps(app_id)}\n"
     f"  private_key: |\n{indented}\n"
-    f"  smee_url: {read_key('smee').strip()!r}\n"
+    f"  smee_url: {json.dumps(smee_url)}\n"
 )
-PY
-      ) || return 1
+' || return 1
+    ;;
+  esac
+}
+
+# Write primary GitHub App credentials from an output directory into a YAML config file
+# (mode 0600) or pass:<entry>, preserving existing sections when already present.
+pac_e2e_config_write_primary() {
+  local cfg_path=$1 outdir=$2
+  if pac_e2e_config_is_pass "${cfg_path}"; then
+    local entry=${cfg_path#pass:} existing="" rendered
+    command -v pass >/dev/null 2>&1 || {
+      echo "Error: pass is required to write ${cfg_path}." >&2
+      return 1
+    }
+    local store_dir=${PASSWORD_STORE_DIR:-${HOME}/.password-store}
+    if [[ -f "${store_dir}/${entry}.gpg" ]]; then
+      if ! existing=$(pass show "${entry}" 2>/dev/null && printf x); then
+        echo "Error: existing pass entry '${entry}' could not be decrypted; aborting to avoid overwriting it." >&2
+        return 1
+      fi
+    else
+      existing=$(pass show "${entry}" 2>/dev/null && printf x || true)
     fi
+    existing=${existing%x}
+    # The rendered document is written back verbatim: trailing newlines are part
+    # of keep-chomped (|+) blocks, so they must survive the capture too.
+    rendered=$(printf '%s' "${existing}" | _pac_e2e_config_render_primary "${cfg_path}" "${outdir}" && printf x) || return 1
+    rendered=${rendered%x}
     [[ -n ${rendered} ]] || return 1
-    printf '%s\n' "${rendered}" | pass insert -m -f "${entry}" >/dev/null
+    printf '%s' "${rendered}" | pass insert -m -f "${entry}" >/dev/null
     return $?
   fi
   (
     umask 077
     mkdir -p "$(dirname "${cfg_path}")"
-    if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
-      python3 - "${cfg_path}" "${outdir}" <<'PY'
-import os, sys, yaml
-
-cfg_path, outdir = sys.argv[1], sys.argv[2]
-def read_key(name):
-    with open(os.path.join(outdir, name), "r", encoding="utf-8") as fh:
-        return fh.read()
-
-class LiteralStr(str):
-    pass
-
-def literal_representer(dumper, data):
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
-
-yaml.add_representer(LiteralStr, literal_representer)
-
-data = {}
-if os.path.exists(cfg_path) and os.path.getsize(cfg_path) > 0:
-    with open(cfg_path, "r", encoding="utf-8") as fh:
-        loaded = yaml.safe_load(fh)
-        if isinstance(loaded, dict):
-            data = loaded
-data.setdefault("common", {})
-data.setdefault("github", {})
-data["common"]["webhook_secret"] = read_key("webhook.secret").strip()
-data["github"]["application_id"] = read_key("github-application-id").strip()
-data["github"]["private_key"] = LiteralStr(read_key("github-private-key"))
-data["github"]["smee_url"] = read_key("smee").strip()
-
-fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-os.fchmod(fd, 0o600)
-with os.fdopen(fd, "w", encoding="utf-8") as fh:
-    yaml.dump(data, fh, sort_keys=False, default_flow_style=False)
-PY
-      return $?
-    fi
-
-    if [[ -s ${cfg_path} ]]; then
-      if [[ $(pac_yaml_parser 2>/dev/null || true) == yq-go ]]; then
-        chmod 600 "${cfg_path}"
-        WEBHOOK_SECRET=$(tr -d '\r\n' <"${outdir}/webhook.secret") \
-          APP_ID=$(tr -d '\r\n' <"${outdir}/github-application-id") \
-          PRIV_KEY=$(cat "${outdir}/github-private-key") \
-          SMEE_URL=$(tr -d '\r\n' <"${outdir}/smee") \
-        yq eval -i '
-          .common.webhook_secret = strenv(WEBHOOK_SECRET) |
-          .github.application_id = strenv(APP_ID) |
-          .github.private_key = strenv(PRIV_KEY) |
-          .github.smee_url = strenv(SMEE_URL)
-        ' "${cfg_path}" || return 1
-        chmod 600 "${cfg_path}"
-        return $?
+    local existing="" rendered
+    if [[ -e ${cfg_path} ]]; then
+      existing=$(cat "${cfg_path}" && printf x) || {
+        echo "Error: ${cfg_path} exists but could not be read." >&2
+        return 1
+      }
+      existing=${existing%x}
+      # Tighten before writing so existing credentials are never world-readable,
+      # without loosening a file we were not allowed to write in the first place.
+      if [[ -w ${cfg_path} ]]; then
+        chmod 600 "${cfg_path}" || return 1
       fi
-      echo "Error: PyYAML or Go yq is required to safely update existing ${cfg_path} without losing other sections." >&2
-      return 1
     fi
-
-    python3 - "${cfg_path}" "${outdir}" <<'PY'
-import os, sys
-
-cfg_path, outdir = sys.argv[1], sys.argv[2]
-def read_key(name):
-    with open(os.path.join(outdir, name), "r", encoding="utf-8") as fh:
-        return fh.read()
-
-app_id = read_key("github-application-id").strip()
-priv_key = read_key("github-private-key")
-webhook_secret = read_key("webhook.secret").strip()
-smee_url = read_key("smee").strip()
-indented = "\n".join("    " + line for line in priv_key.splitlines())
-content = (
-    f"common:\n"
-    f"  webhook_secret: {webhook_secret!r}\n"
-    f"github:\n"
-    f"  application_id: {app_id!r}\n"
-    f"  private_key: |\n{indented}\n"
-    f"  smee_url: {smee_url!r}\n"
-)
-fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-os.fchmod(fd, 0o600)
-with os.fdopen(fd, "w", encoding="utf-8") as fh:
-    fh.write(content)
-PY
+    rendered=$(printf '%s' "${existing}" | _pac_e2e_config_render_primary "${cfg_path}" "${outdir}" && printf x) || return 1
+    rendered=${rendered%x}
+    [[ -n ${rendered} ]] || return 1
+    printf '%s' "${rendered}" >"${cfg_path}" || return 1
+    chmod 600 "${cfg_path}" || return 1
   )
 }
 
-# Read one PAC secret key from PAC_E2E_CONFIG.
-# Optional second argument selects scope: "primary" (default) or "second".
-# Returns nonzero when PAC_E2E_CONFIG is missing or the YAML parser fails.
-pac_secret_read() {
-  local key=$1 scope=${2:-primary}
-  [[ -n ${PAC_E2E_CONFIG:-} ]] || return 1
-  if [[ ${scope} == second ]]; then
-    case ${key} in
-    github-application-id) pac_e2e_config_read github_enterprise application_id ;;
-    github-private-key) pac_e2e_config_read github_enterprise private_key ;;
-    webhook.secret) pac_e2e_config_read github_enterprise webhook_secret ;;
-    smee) pac_e2e_config_read github_enterprise smee_url ;;
-    *) return 1 ;;
-    esac
-  else
-    case ${key} in
-    github-application-id) pac_e2e_config_read github application_id ;;
-    github-private-key) pac_e2e_config_read github private_key ;;
-    webhook.secret) pac_e2e_config_read common webhook_secret ;;
-    smee) pac_e2e_config_read github smee_url ;;
-    *) return 1 ;;
-    esac
-  fi
+# Read one PAC GitHub App credential field from PAC_E2E_CONFIG.
+# scope: "primary" (default) or "second" controller; field: application_id,
+# private_key, webhook_secret, or smee_url.
+# Returns nonzero for an unknown scope or field, a missing PAC_E2E_CONFIG, or
+# when the YAML parser fails.
+pac_secret_field() {
+  local scope=${1:-primary} field=${2:-} section
+  case ${scope} in
+  primary) section=github ;;
+  second) section=github_enterprise ;;
+  *) return 1 ;;
+  esac
+  case ${field} in
+  application_id | private_key | smee_url) pac_e2e_config_read "${section}" "${field}" ;;
+  webhook_secret)
+    if [[ ${scope} == second ]]; then
+      pac_e2e_config_read "${section}" webhook_secret
+    else
+      pac_e2e_config_read common webhook_secret
+    fi
+    ;;
+  *) return 1 ;;
+  esac
 }
 
 # Return 0 when all GitHub App credentials are present and non-empty in PAC_E2E_CONFIG.
 # Optional argument selects scope: "primary" (default) or "second".
 pac_secrets_complete() {
-  local scope=${1:-primary} key val
+  local scope=${1:-primary} field val
   pac_e2e_config_exists "${PAC_E2E_CONFIG:-}" || return 1
-  for key in github-application-id github-private-key webhook.secret; do
-    val=$(pac_secret_read "${key}" "${scope}") || return 1
+  for field in application_id private_key webhook_secret; do
+    val=$(pac_secret_field "${scope}" "${field}") || return 1
     [[ -n ${val} ]] || return 1
   done
   return 0
@@ -713,8 +677,7 @@ xml_escape() {
 
 # Print the configured smee/relay URL (empty when unset)
 get_smee_url() {
-  local scope=${1:-primary}
-  pac_secret_read smee "${scope}" || true
+  pac_secret_field "${1:-primary}" smee_url || true
 }
 
 # Wrapper around gum choose --no-limit with bash fallback

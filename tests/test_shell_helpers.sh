@@ -82,21 +82,23 @@ EOF
 export PAC_E2E_CONFIG="${e2e_cfg}"
 assert "yaml primary secrets are complete" pac_secrets_complete primary
 assert "yaml primary reads integer application_id" \
-  test "$(pac_secret_read github-application-id primary)" = "98765"
+  test "$(pac_secret_field primary application_id)" = "98765"
 assert "yaml primary reads common.webhook_secret" \
-  test "$(pac_secret_read webhook.secret primary)" = "yaml-webhook-secret"
+  test "$(pac_secret_field primary webhook_secret)" = "yaml-webhook-secret"
 assert "yaml primary reads github.smee_url" \
   test "$(get_smee_url)" = "https://hook.pipelinesascode.com/yaml-primary"
 assert "yaml primary preserves multiline PEM private_key" \
-  grep -q "YAML-KEY-LINE-2" <<<"$(pac_secret_read github-private-key primary)"
+  grep -q "YAML-KEY-LINE-2" <<<"$(pac_secret_field primary private_key)"
 
 assert "yaml second controller secrets are complete" pac_secrets_complete second
 assert "yaml second reads github_enterprise.application_id" \
-  test "$(pac_secret_read github-application-id second)" = "54321"
+  test "$(pac_secret_field second application_id)" = "54321"
 assert "yaml second reads github_enterprise.webhook_secret" \
-  test "$(pac_secret_read webhook.secret second)" = "ghe-webhook-secret"
+  test "$(pac_secret_field second webhook_secret)" = "ghe-webhook-secret"
 assert "yaml second reads github_enterprise.smee_url" \
   test "$(get_smee_url second)" = "https://hook.pipelinesascode.com/yaml-ghe"
+assert_not "unknown scope is rejected" pac_secret_field sideways application_id
+assert_not "unknown field is rejected" pac_secret_field primary bogus
 
 # Incomplete PAC_E2E_CONFIG fails check
 e2e_incomplete="${TESTTMP}/e2e-incomplete.yaml"
@@ -143,9 +145,26 @@ if python3 -c 'import yaml' >/dev/null 2>&1; then
   mkdir -p "${py_only_bin}"
   ln -sf "$(command -v python3)" "${py_only_bin}/python3"
   ln -sf "$(command -v cat)" "${py_only_bin}/cat"
-  py_val=$(PATH="${py_only_bin}" PAC_E2E_CONFIG="${e2e_cfg}" /bin/bash -c 'source "$1/lib/common.sh"; pac_secret_read webhook.secret primary' _ "${SP}")
+  for tool in tr mkdir chmod dirname; do
+    ln -sf "$(command -v "${tool}")" "${py_only_bin}/${tool}"
+  done
+  py_val=$(PATH="${py_only_bin}" PAC_E2E_CONFIG="${e2e_cfg}" /bin/bash -c 'source "$1/lib/common.sh"; pac_secret_field primary webhook_secret' _ "${SP}")
   assert "python3 PyYAML fallback reads PAC_E2E_CONFIG without yq" \
     test "${py_val}" = "yaml-webhook-secret"
+
+  py_partial_out="${TESTTMP}/py-partial-out"
+  mkdir -p "${py_partial_out}"
+  printf '42424' >"${py_partial_out}/github-application-id"
+  printf '%s\n%s\n%s\n' '-----BEGIN RSA PRIVATE KEY-----' 'NEWKEY' '-----END RSA PRIVATE KEY-----' >"${py_partial_out}/github-private-key"
+  printf 'new-webhook-secret' >"${py_partial_out}/webhook.secret"
+  py_partial="${TESTTMP}/py-partial.yaml"
+  cp "${e2e_cfg}" "${py_partial}"
+  cp "${py_partial}" "${TESTTMP}/py-partial-reference.yaml"
+  # shellcheck disable=SC2016
+  assert_not "python3 write path fails when a credential file is missing" \
+    env PATH="${py_only_bin}" /bin/bash -c 'source "$1/lib/common.sh"; pac_e2e_config_write_primary "$2" "$3"' _ "${SP}" "${py_partial}" "${py_partial_out}"
+  assert "python3 write path leaves the config untouched when a credential file is missing" \
+    cmp -s "${py_partial}" "${TESTTMP}/py-partial-reference.yaml"
 fi
 
 # pac_e2e_config_write_primary enforces 0600 on existing 0644 files and preserves other sections
@@ -169,6 +188,74 @@ assert "pac_e2e_config_write_primary updates github.application_id" \
 assert "pac_e2e_config_write_primary preserves github_enterprise section" \
   test "$(pac_e2e_config_read github_enterprise application_id "${existing_cfg}")" = "54321"
 
+# A fresh config file is created with mode 0600
+new_cfg="${TESTTMP}/new-config.yaml"
+assert "pac_e2e_config_write_primary creates a fresh config" \
+  pac_e2e_config_write_primary "${new_cfg}" "${ghapp_out}"
+new_mode=$(stat -c '%a' "${new_cfg}" 2>/dev/null || stat -f '%Lp' "${new_cfg}")
+assert "fresh config is created with mode 600" test "${new_mode}" = "600"
+assert "fresh config contains the new credentials" \
+  test "$(pac_e2e_config_read github application_id "${new_cfg}")" = "42424"
+assert "fresh config contains the multiline private key" \
+  grep -q "NEWKEY" "${new_cfg}"
+
+# A read-only target must fail instead of reporting success on a failed write
+readonly_cfg="${TESTTMP}/readonly.yaml"
+cp "${e2e_cfg}" "${readonly_cfg}"
+chmod 444 "${readonly_cfg}"
+if [[ ! -w ${readonly_cfg} ]]; then
+  assert_not "write fails when the config file is read-only" \
+    pac_e2e_config_write_primary "${readonly_cfg}" "${ghapp_out}"
+fi
+
+# A missing credential file must fail the write, not store an empty value
+partial_out="${TESTTMP}/ghapp-partial"
+mkdir -p "${partial_out}"
+cp "${ghapp_out}/github-application-id" "${ghapp_out}/github-private-key" "${ghapp_out}/webhook.secret" "${partial_out}/"
+partial_cfg="${TESTTMP}/partial.yaml"
+cp "${e2e_cfg}" "${partial_cfg}"
+cp "${partial_cfg}" "${TESTTMP}/partial-reference.yaml"
+assert_not "write fails when a credential file is missing" \
+  pac_e2e_config_write_primary "${partial_cfg}" "${partial_out}"
+assert "config is left untouched when a credential file is missing" \
+  cmp -s "${partial_cfg}" "${TESTTMP}/partial-reference.yaml"
+
+# Trailing newlines in the document and in the private key must survive a rewrite
+# The keep-chomped block comes last so the write-back has to preserve the newlines
+# the renderer emits at end of file.
+newline_cfg="${TESTTMP}/newline.yaml"
+printf 'common:\n  webhook_secret: "old"\ngithub:\n  application_id: "1"\nother: |+\n  kept\n\n' >"${newline_cfg}"
+assert "write preserves an unrelated keep-chomped block" \
+  pac_e2e_config_write_primary "${newline_cfg}" "${ghapp_out}"
+assert "trailing newlines survive the rewrite" \
+  python3 -c 'import sys, yaml
+loaded = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+sys.exit(0 if loaded["other"] == "kept\n\n" and loaded["github"]["private_key"].endswith("-----END RSA PRIVATE KEY-----\n") else 1)' "${newline_cfg}"
+
+# python-yq on PATH does not prove PATH's python3 can import PyYAML
+if python3 -c 'import sys' >/dev/null 2>&1; then
+  pyq_bin="${TESTTMP}/python-yq-bin"
+  poison="${TESTTMP}/poison"
+  mkdir -p "${pyq_bin}" "${poison}"
+  printf '#!/bin/sh\necho "yq 3.4.3"\n' >"${pyq_bin}/yq"
+  chmod +x "${pyq_bin}/yq"
+  printf 'raise ImportError("PyYAML unavailable for this test")\n' >"${poison}/yaml.py"
+  for tool in python3 cat tr mkdir chmod dirname; do
+    ln -sf "$(command -v "${tool}")" "${pyq_bin}/${tool}"
+  done
+  pyq_cfg="${TESTTMP}/python-yq.yaml"
+  # shellcheck disable=SC2016
+  assert "python-yq without PyYAML still creates a fresh config" \
+    env PATH="${pyq_bin}" PYTHONPATH="${poison}" /bin/bash -c 'source "$1/lib/common.sh"; pac_e2e_config_write_primary "$2" "$3"' _ "${SP}" "${pyq_cfg}" "${ghapp_out}"
+  assert "python-yq fallback writes the credentials" \
+    grep -q 42424 "${pyq_cfg}"
+  pyq_existing="${TESTTMP}/python-yq-existing.yaml"
+  cp "${e2e_cfg}" "${pyq_existing}"
+  # shellcheck disable=SC2016
+  assert_not "python-yq without PyYAML refuses to rewrite an existing config" \
+    env PATH="${pyq_bin}" PYTHONPATH="${poison}" /bin/bash -c 'source "$1/lib/common.sh"; pac_e2e_config_write_primary "$2" "$3"' _ "${SP}" "${pyq_existing}" "${ghapp_out}"
+fi
+
 # yq-only write path (no PyYAML) preserves other sections and enforces 600
 if [[ $(pac_yaml_parser 2>/dev/null || true) == yq-go ]]; then
   noyaml_bin="${TESTTMP}/noyaml-bin"
@@ -185,6 +272,15 @@ EOF
     env PATH="${noyaml_bin}:${PATH}" /bin/bash -c 'source "$1/lib/common.sh"; pac_e2e_config_write_primary "$2" "$3"' _ "${SP}" "${existing_yq}" "${ghapp_out}"
   yq_mode=$(stat -c '%a' "${existing_yq}" 2>/dev/null || stat -f '%Lp' "${existing_yq}")
   assert "yq-go write path tightens permissions to 600" test "${yq_mode}" = "600"
+
+  partial_yq="${TESTTMP}/partial-yq.yaml"
+  cp "${e2e_cfg}" "${partial_yq}"
+  cp "${partial_yq}" "${TESTTMP}/partial-yq-reference.yaml"
+  # shellcheck disable=SC2016
+  assert_not "yq-go write path fails when a credential file is missing" \
+    env PATH="${noyaml_bin}:${PATH}" /bin/bash -c 'source "$1/lib/common.sh"; pac_e2e_config_write_primary "$2" "$3"' _ "${SP}" "${partial_yq}" "${partial_out}"
+  assert "yq-go write path leaves the config untouched when a credential file is missing" \
+    cmp -s "${partial_yq}" "${TESTTMP}/partial-yq-reference.yaml"
   assert "yq-go write path preserves github_enterprise section" \
     test "$(pac_e2e_config_read github_enterprise application_id "${existing_yq}")" = "54321"
 fi
@@ -216,7 +312,7 @@ chmod +x "${pass_bin}/pass"
 assert "pass:<entry> is detected and completes primary checks" \
   env PATH="${pass_bin}:${PATH}" PAC_E2E_CONFIG="pass:pac/e2e-test" /bin/bash -c 'source "$1/lib/common.sh"; pac_secrets_complete primary' _ "${SP}"
 assert "pass:<entry> reads second controller application_id" \
-  test "$(PATH="${pass_bin}:${PATH}" PAC_E2E_CONFIG="pass:pac/e2e-test" /bin/bash -c 'source "$1/lib/common.sh"; pac_secret_read github-application-id second' _ "${SP}")" = "54321"
+  test "$(PATH="${pass_bin}:${PATH}" PAC_E2E_CONFIG="pass:pac/e2e-test" /bin/bash -c 'source "$1/lib/common.sh"; pac_secret_field second application_id' _ "${SP}")" = "54321"
 assert_not "missing pass:<entry> fails closed" \
   env PATH="${pass_bin}:${PATH}" PAC_E2E_CONFIG="pass:pac/missing" /bin/bash -c 'source "$1/lib/common.sh"; pac_secrets_complete primary' _ "${SP}"
 assert "pac_e2e_config_write_primary updates pass:<entry> preserving github_enterprise" \
@@ -230,13 +326,13 @@ github:
   smee_url: "https://hook.pipelinesascode.com/overlay-smee"
 EOF
 assert "overlay overrides github.application_id" \
-  test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" pac_secret_read github-application-id primary)" = "77777"
+  test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" pac_secret_field primary application_id)" = "77777"
 assert "overlay overrides github.smee_url" \
   test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" get_smee_url)" = "https://hook.pipelinesascode.com/overlay-smee"
 assert "overlay falls back to base for omitted webhook_secret" \
-  test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" pac_secret_read webhook.secret primary)" = "yaml-webhook-secret"
+  test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" pac_secret_field primary webhook_secret)" = "yaml-webhook-secret"
 assert "overlay falls back to base for omitted github_enterprise section" \
-  test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" pac_secret_read github-application-id second)" = "54321"
+  test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" pac_secret_field second application_id)" = "54321"
 assert_not "missing overlay file fails closed" \
   env PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${TESTTMP}/no-such-overlay.yaml" /bin/bash -c 'source "$1/lib/common.sh"; pac_secrets_complete primary' _ "${SP}"
 assert_not "malformed overlay fails closed" \
@@ -246,7 +342,7 @@ assert_not "collection-valued field in overlay fails closed instead of falling b
 
 cp "${e2e_overlay}" "${pass_store}/pac/e2e-overlay.yaml"
 assert "pass:<entry> overlay works on top of file base" \
-  test "$(PATH="${pass_bin}:${PATH}" PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="pass:pac/e2e-overlay" /bin/bash -c 'source "$1/lib/common.sh"; pac_secret_read github-application-id primary' _ "${SP}")" = "77777"
+  test "$(PATH="${pass_bin}:${PATH}" PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="pass:pac/e2e-overlay" /bin/bash -c 'source "$1/lib/common.sh"; pac_secret_field primary application_id' _ "${SP}")" = "77777"
 unset PAC_E2E_CONFIG PAC_E2E_CONFIG_OVERRIDE
 
 fakebin="${TESTTMP}/bin"
