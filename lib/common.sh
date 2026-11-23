@@ -382,7 +382,9 @@ sec = data.get(sys.argv[1])
 val = sec.get(sys.argv[2]) if isinstance(sec, dict) else None
 if isinstance(val, (dict, list)):
     sys.exit(1)
-if val is not None and val != "":
+if isinstance(val, bool):
+    sys.stdout.write("true" if val else "false")
+elif val is not None and val != "":
     sys.stdout.write(str(val))
 ' "${section}" "${field}" 2>/dev/null
       ;;
