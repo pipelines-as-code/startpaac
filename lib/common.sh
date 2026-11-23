@@ -269,6 +269,10 @@ check_tools() {
       echo "Error: yq (or python3 with PyYAML) is required to read ${cfg_var} (${cfg_val})."
       return 1
     fi
+    if ! pac_e2e_config_valid "${cfg_val}"; then
+      echo "Error: invalid YAML or non-scalar credential field in ${cfg_var} (${cfg_val})."
+      return 1
+    fi
   done
   return 0
 }
@@ -363,7 +367,7 @@ pac_e2e_config_read_one() {
     set -o pipefail
     case ${parser} in
     yq-go)
-      pac_e2e_config_stream "${file}" | yq eval -r ".${section}.${field} | select(. != null and . != \"\") | (select(kind == \"scalar\") // error(\"expected scalar\"))" - 2>/dev/null
+      pac_e2e_config_stream "${file}" | yq eval -r "[.${section}.${field}] | select(.[0] != null and .[0] != \"\") | (select(.[0] | kind == \"scalar\") // error(\"expected scalar\")) | .[0]" - 2>/dev/null
       ;;
     yq-py)
       pac_e2e_config_stream "${file}" | yq -r ".${section}.${field} | if . == null or . == \"\" then empty elif (type == \"array\" or type == \"object\") then error(\"expected scalar\") else . end" - 2>/dev/null
@@ -436,11 +440,26 @@ _input() {
   fi
 }
 
-# Return 0 when the PAC_E2E_CONFIG file or pass:<entry> exists and parses as valid YAML.
+# Return 0 when the PAC_E2E_CONFIG file or pass:<entry> exists, parses as valid
+# YAML, and contains no collection-valued credential or setting fields.
 pac_e2e_config_valid() {
-  local file=${1:-${PAC_E2E_CONFIG:-}}
+  local file=${1:-${PAC_E2E_CONFIG:-}} pair section field
   pac_e2e_config_exists "${file}" || return 1
-  pac_e2e_config_read common webhook_secret "${file}" >/dev/null
+  for pair in \
+    common.webhook_secret \
+    github.application_id \
+    github.private_key \
+    github.smee_url \
+    github_enterprise.application_id \
+    github_enterprise.private_key \
+    github_enterprise.webhook_secret \
+    github_enterprise.smee_url \
+    github_enterprise.api_url; do
+    section=${pair%%.*}
+    field=${pair#*.}
+    pac_e2e_config_read_one "${section}" "${field}" "${file}" >/dev/null || return 1
+  done
+  return 0
 }
 
 # Write primary GitHub App credentials from an output directory into a YAML config file
