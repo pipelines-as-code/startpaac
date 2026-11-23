@@ -640,11 +640,11 @@ cli_main() {
   fi
   cli_validate
   cli_require_jq
+  if [[ ${CLI_MANAGED} == true ]] && pac_e2e_config_is_pass "${PAC_E2E_CONFIG:-}"; then
+    export PASSWORD_STORE_GPG_OPTS="${PASSWORD_STORE_GPG_OPTS:-} --batch --no-tty --pinentry-mode error"
+  fi
   initialize_runtime
   if [[ ${CLI_MANAGED} == true ]]; then
-    if pac_e2e_config_is_pass "${PAC_E2E_CONFIG:-}"; then
-      export PASSWORD_STORE_GPG_OPTS="${PASSWORD_STORE_GPG_OPTS:-} --batch --no-tty --pinentry-mode error"
-    fi
     if [[ ${CLI_ACTION} == --setup-github-app || ${FORCE_INTERACTIVE} == true ]]; then
       cli_error requires_interaction 'This action requires an interactive session.' 'Run it separately in a terminal without --non-interactive.'
       exit 1
