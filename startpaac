@@ -416,19 +416,30 @@ install_pac() {
   done
 }
 
+# Map a PAC credential field to the Kubernetes secret data key PAC expects.
+_pac_secret_data_key() {
+  case ${1:-} in
+  application_id) printf '%s\n' github-application-id ;;
+  private_key) printf '%s\n' github-private-key ;;
+  webhook_secret) printf '%s\n' webhook.secret ;;
+  *) return 1 ;;
+  esac
+}
+
 create_pac_secret() (
-  local secret_name=$1 target_ns=$2 scope=${3:-primary} secret_tmp passk value
+  local secret_name=$1 target_ns=$2 scope=${3:-primary} secret_tmp field key value
   umask 077
   secret_tmp=$(mktemp -d /tmp/.startpaac-secret.XXXXXX)
   trap 'rm -rf "${secret_tmp}"' EXIT
-  for passk in github-application-id github-private-key webhook.secret; do
-    if ! pac_secret_read "${passk}" "${scope}" >"${secret_tmp}/${passk}" 2>/dev/null || [[ ! -s ${secret_tmp}/${passk} ]]; then
+  for field in application_id private_key webhook_secret; do
+    key=$(_pac_secret_data_key "${field}") || return 1
+    if ! pac_secret_field "${scope}" "${field}" >"${secret_tmp}/${key}" 2>/dev/null || [[ ! -s ${secret_tmp}/${key} ]]; then
       echo 'Cannot read PAC credentials; existing cluster secrets were left unchanged.' >&2
       return 1
     fi
-    if [[ ${passk} != github-private-key ]]; then
-      value=$(<"${secret_tmp}/${passk}")
-      printf '%s' "${value}" >"${secret_tmp}/${passk}"
+    if [[ ${field} != private_key ]]; then
+      value=$(<"${secret_tmp}/${key}")
+      printf '%s' "${value}" >"${secret_tmp}/${key}"
     fi
   done
   if ! kubectl create secret generic "${secret_name}" -n "${target_ns}" \
@@ -802,7 +813,7 @@ function install_github_second_ctrl() {
     exit 1
   fi
   echo "Using E2E YAML config for second controller: ${PAC_E2E_CONFIG}"
-  pac_controller_smee_url=$(pac_secret_read smee second || true)
+  pac_controller_smee_url=$(pac_secret_field second smee_url || true)
 
   require_tool ko
 
