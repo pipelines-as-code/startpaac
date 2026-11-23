@@ -227,10 +227,19 @@ newline_cfg="${TESTTMP}/newline.yaml"
 printf 'common:\n  webhook_secret: "old"\ngithub:\n  application_id: "1"\nother: |+\n  kept\n\n' >"${newline_cfg}"
 assert "write preserves an unrelated keep-chomped block" \
   pac_e2e_config_write_primary "${newline_cfg}" "${ghapp_out}"
-assert "trailing newlines survive the rewrite" \
-  python3 -c 'import sys, yaml
+if python3 -c 'import yaml' >/dev/null 2>&1; then
+  assert "trailing newlines survive the rewrite" \
+    python3 -c 'import sys, yaml
 loaded = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 sys.exit(0 if loaded["other"] == "kept\n\n" and loaded["github"]["private_key"].endswith("-----END RSA PRIVATE KEY-----\n") else 1)' "${newline_cfg}"
+elif [[ $(pac_yaml_parser 2>/dev/null || true) == yq-go ]]; then
+  assert "trailing newlines survive the rewrite" \
+    yq eval -e '
+      (.other | test("\\n\\n$")) and
+      (.github.private_key | test("\\n$")) and
+      (.github.private_key | test("-----END RSA PRIVATE KEY-----"))
+    ' "${newline_cfg}"
+fi
 
 # python-yq on PATH does not prove PATH's python3 can import PyYAML
 if python3 -c 'import sys' >/dev/null 2>&1; then
