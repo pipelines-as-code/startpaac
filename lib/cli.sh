@@ -371,8 +371,8 @@ cli_preflight() {
     cli_check e2e_config_file "${ok}" "PAC_E2E_CONFIG exists: ${ok}" "Set PAC_E2E_CONFIG (or pass --e2e-config FILE or pass:<entry>) to a readable E2E YAML config."
     if [[ -n ${PAC_E2E_CONFIG_OVERRIDE:-} ]]; then
       ok=false
-      pac_e2e_config_exists "${PAC_E2E_CONFIG_OVERRIDE}" && ok=true
-      cli_check e2e_config_override "${ok}" "PAC_E2E_CONFIG_OVERRIDE exists: ${ok}" "Ensure PAC_E2E_CONFIG_OVERRIDE (${PAC_E2E_CONFIG_OVERRIDE}) exists and is readable."
+      pac_e2e_config_valid "${PAC_E2E_CONFIG_OVERRIDE}" && ok=true
+      cli_check e2e_config_override "${ok}" "PAC_E2E_CONFIG_OVERRIDE valid: ${ok}" "Ensure PAC_E2E_CONFIG_OVERRIDE (${PAC_E2E_CONFIG_OVERRIDE}) exists, is valid YAML, and has scalar credential fields."
     fi
     ok=false
     pac_yaml_parser >/dev/null 2>&1 && ok=true
