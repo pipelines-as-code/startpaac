@@ -67,6 +67,7 @@ _arguments -C \
     '--install-dashboard[Install Tekton dashboard]' \
     '--install-triggers[Install Tekton Triggers]' \
     '--install-chains[Install Tekton Chains]' \
+    '--install-kueue[Install Kueue to queue PipelineRuns one at a time]' \
     '--install-registry[Install Docker registry]' \
     '--setup-forgejo-sample[Create sample Forgejo repositories]' \
     '--debug-image[Use a debug image]' \

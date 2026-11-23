@@ -101,7 +101,7 @@ You can also create a GitHub App directly without running the full installer:
 Kind cluster, Envoy Gateway, Docker registry, Tekton Pipelines
 
 **Optional** (selected via menu):
-PAC (built from local source with ko), Tekton Dashboard, Tekton Triggers, Tekton Chains, Forgejo, PostgreSQL, GitHub second controller
+PAC (built from local source with ko), Tekton Dashboard, Tekton Triggers, Tekton Chains, Forgejo, PostgreSQL, Kueue (off by default), GitHub second controller
 
 ## Common usage
 
@@ -141,6 +141,7 @@ Configure PAC on an existing cluster (e.g. OpenShift):
 | `--install-tekton` | Install Tekton |
 | `--install-triggers` | Install Tekton Triggers |
 | `--install-chains` | Install Tekton Chains |
+| `--install-kueue` | Install Kueue and queue PipelineRuns one at a time |
 | `--redeploy-kind` | Redeploy Kind |
 | `--scale-down` | Scale down a component |
 | `--stop-kind` | Stop Kind |

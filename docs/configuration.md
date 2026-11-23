@@ -156,6 +156,35 @@ global:
 
 Default credentials are weak and for local dev only.
 
+## Kueue
+
+Kueue is off by default. Select it in the component menu (shown on the first
+run and with `--menu`), or install it on an existing cluster that already has
+Tekton Pipelines:
+
+```shell
+./startpaac --install-kueue
+```
+
+This installs cert-manager v1.19.2, Kueue v0.16.6 and
+[tekton-kueue](https://github.com/tektoncd/tekton-kueue) v0.4.3, then creates a
+`startpaac-pipelines` ClusterQueue that admits one PipelineRun at a time. New
+PipelineRuns start as `PipelineRunPending` and run in order as the queue frees
+up.
+
+Only namespaces listed in `KUEUE_NAMESPACES` (space separated, default
+`default`) are queued. startpaac labels them `startpaac.dev/kueue=enabled` and
+creates a `pipelines-queue` LocalQueue in each; other namespaces, including
+the ones PAC E2E tests create, are left alone.
+
+```shell
+KUEUE_NAMESPACES="default sample"
+```
+
+To change which namespaces are queued, edit `KUEUE_NAMESPACES` and run
+`./startpaac --install-kueue` again. Namespaces you dropped from the list go
+back to running their PipelineRuns right away.
+
 ## Preferences
 
 Component selections are saved to `~/.config/startpaac/preferences.json` when you choose to save them. On subsequent runs, saved preferences are used automatically.
@@ -194,7 +223,7 @@ pre-install-tekton    -- runs before Tekton install
 post-configure-pac    -- runs after PAC configuration
 ```
 
-Available hook points: `all`, `stop-kind`, `sync-kubeconfig`, `install-gateway`, `install-registry`, `install-tekton`, `install-triggers`, `install-chains`, `install-dashboard`, `install-pac`, `configure-pac`, `configure-pac-custom-certs`, `patch-pac-service-nodeport`, `install-forgejo`, `setup-forgejo-sample`, `install-postgresql`, `install-custom-objects`, `install-github-second-ctrl`.
+Available hook points: `all`, `stop-kind`, `sync-kubeconfig`, `install-gateway`, `install-registry`, `install-tekton`, `install-triggers`, `install-chains`, `install-dashboard`, `install-kueue`, `install-pac`, `configure-pac`, `configure-pac-custom-certs`, `patch-pac-service-nodeport`, `install-forgejo`, `setup-forgejo-sample`, `install-postgresql`, `install-custom-objects`, `install-github-second-ctrl`.
 
 Hooks run in the full install flows and in matching direct component commands such as `--install-tekton`, `--install-paac`, `--install-forgejo`, and `--configure-pac`.
 

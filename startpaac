@@ -64,6 +64,8 @@ initialize_runtime() {
   INSTALL_TEKTON_CHAINS=${INSTALL_TEKTON_CHAINS:-"false"}
   INSTALL_TEKTON_DASHBOARD=${INSTALL_TEKTON_DASHBOARD:-"true"}
   INSTALL_POSTGRESQL=${INSTALL_POSTGRESQL:-"false"}
+  INSTALL_KUEUE=${INSTALL_KUEUE:-"false"}
+  KUEUE_NAMESPACES=${KUEUE_NAMESPACES:-"default"}
   INSTALL_CUSTOM_OBJECT_ENABLED=${INSTALL_CUSTOM_OBJECT_ENABLED:-"false"}
   if [[ ${TARGET_HOST} == local ]]; then
     KO_EXTRA_FLAGS=(--insecure-registry)
@@ -329,6 +331,121 @@ install_dashboard() {
   release_yaml=$(cache_yaml_file dashboard https://infra.tekton.dev/tekton-releases/dashboard/latest/release.yaml)
   kubectl apply --filename "${release_yaml}" >/dev/null
   create_httproute tekton-pipelines tekton-dashboard ${DASHBOARD} 9097
+}
+
+KUEUE_VERSION=v0.16.6
+TEKTON_KUEUE_VERSION=v0.4.3
+CERT_MANAGER_VERSION=v1.19.2
+KUEUE_NAMESPACE_LABEL=startpaac.dev/kueue
+
+# Prints the tekton-kueue release with its PipelineRun webhook limited to
+# namespaces carrying KUEUE_NAMESPACE_LABEL=enabled.
+kueue_scope_tekton_webhook() {
+  awk -v label="${KUEUE_NAMESPACE_LABEL}" '
+    { print }
+    /^    name: pipelinerun-kueue-defaulter\.tekton-kueue\.io$/ {
+      print "    namespaceSelector:"
+      print "      matchLabels:"
+      print "        " label ": enabled"
+      found++
+    }
+    END { if (found != 1) exit 1 }
+  ' "$1"
+}
+
+kueue_manager_config() {
+  kubectl get configmap kueue-manager-config -n kueue-system \
+    -o jsonpath='{.data.controller_manager_config\.yaml}' 2>/dev/null || true
+}
+
+install_kueue() {
+  local manifest tekton_kueue ns deployment attempt previous_config ca_bundle=''
+  if ! kubectl get crd pipelineruns.tekton.dev >/dev/null 2>&1; then
+    echo_color brightred "Kueue integration needs Tekton Pipelines; install it first with --install-tekton"
+    return 1
+  fi
+
+  show_step "Deploying cert-manager ${CERT_MANAGER_VERSION}"
+  manifest=$(cache_yaml_file "cert-manager-${CERT_MANAGER_VERSION}" "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml")
+  kubectl apply --server-side --force-conflicts -f "${manifest}" >/dev/null
+  for deployment in cert-manager cert-manager-cainjector cert-manager-webhook; do
+    kubectl rollout status "deployment/${deployment}" -n cert-manager --timeout=300s
+  done
+
+  show_step "Deploying Kueue ${KUEUE_VERSION}"
+  manifest=$(cache_yaml_file "kueue-${KUEUE_VERSION}" "https://github.com/kubernetes-sigs/kueue/releases/download/${KUEUE_VERSION}/manifests.yaml")
+  previous_config=$(kueue_manager_config)
+  kubectl apply --server-side --force-conflicts -f "${manifest}" -f "${SP}/lib/kueue/kueue-config.yaml" >/dev/null
+  # Kueue reads its configuration only at startup, and on a fresh install the
+  # pod can start before the custom configuration replaces the upstream one.
+  if [[ ${previous_config} != "$(kueue_manager_config)" ]]; then
+    kubectl rollout restart deployment/kueue-controller-manager -n kueue-system >/dev/null
+  fi
+  kubectl rollout status deployment/kueue-controller-manager -n kueue-system --timeout=300s
+  # Kueue intercepts Deployments cluster-wide, so its webhook has to answer
+  # before anything else is applied. Several answers in a row make sure the
+  # Service no longer routes to a pod that is shutting down.
+  echo_color -n brightgreen "Waiting for the Kueue webhook to answer: "
+  local answers=0
+  for ((attempt = 1; answers < 5; attempt++)); do
+    if kubectl create deployment startpaac-kueue-probe --image=startpaac-probe -n default \
+      --dry-run=server -o name >/dev/null 2>&1; then
+      answers=$((answers + 1))
+    else
+      answers=0
+      if ((attempt >= 90)); then
+        echo_color brightred " FAILED"
+        return 1
+      fi
+    fi
+    sleep 2
+  done
+  echo_color brightgreen " OK"
+
+  show_step "Deploying tekton-kueue ${TEKTON_KUEUE_VERSION}"
+  manifest=$(cache_yaml_file "tekton-kueue-${TEKTON_KUEUE_VERSION}" "https://infra.tekton.dev/tekton-releases/tekton-kueue/previous/${TEKTON_KUEUE_VERSION}/release.yaml")
+  tekton_kueue=$(mktemp /tmp/.startpaac-tekton-kueue.XXXXXX)
+  CLI_TEMP_FILES+=("${tekton_kueue}")
+  if ! kueue_scope_tekton_webhook "${manifest}" >"${tekton_kueue}"; then
+    echo_color brightred "Cannot scope the tekton-kueue webhook in ${manifest}"
+    return 1
+  fi
+  kubectl apply --server-side --force-conflicts -f "${tekton_kueue}" >/dev/null
+  for deployment in tekton-kueue-controller-manager tekton-kueue-webhook; do
+    kubectl rollout status "deployment/${deployment}" -n tekton-kueue --timeout=300s
+  done
+  wait_for_resource endpoint tekton-kueue tekton-kueue-webhook-service
+  for ((attempt = 1; attempt <= 60; attempt++)); do
+    ca_bundle=$(kubectl get mutatingwebhookconfiguration tekton-kueue-mutating-webhook-configuration \
+      -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null || true)
+    [[ -z ${ca_bundle} ]] || break
+    sleep 2
+  done
+  if [[ -z ${ca_bundle} ]]; then
+    echo_color brightred "cert-manager did not inject the tekton-kueue webhook CA"
+    return 1
+  fi
+
+  show_step "Queueing PipelineRuns one at a time in: ${KUEUE_NAMESPACES}"
+  kubectl apply -f "${SP}/lib/kueue/queues.yaml" >/dev/null
+  for ns in $(kubectl get namespaces -l "${KUEUE_NAMESPACE_LABEL}=enabled" -o jsonpath='{.items[*].metadata.name}'); do
+    [[ " ${KUEUE_NAMESPACES} " != *" ${ns} "* ]] || continue
+    echo "Removing ${ns} from the Kueue queue"
+    kubectl label namespace "${ns}" "${KUEUE_NAMESPACE_LABEL}-" >/dev/null
+    kubectl delete localqueue pipelines-queue -n "${ns}" --ignore-not-found >/dev/null
+  done
+  for ns in ${KUEUE_NAMESPACES}; do
+    kubectl get namespace "${ns}" >/dev/null 2>&1 || kubectl create namespace "${ns}" >/dev/null
+    kubectl label namespace "${ns}" "${KUEUE_NAMESPACE_LABEL}=enabled" --overwrite >/dev/null
+    kubectl apply -n "${ns}" -f - >/dev/null <<EOF
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: pipelines-queue
+spec:
+  clusterQueue: startpaac-pipelines
+EOF
+  done
 }
 
 stop_kind() {
@@ -885,6 +1002,7 @@ all() {
   [[ ${INSTALL_TEKTON_TRIGGERS} == "true" ]] && run_with_hooks install-triggers install_triggers
   [[ ${INSTALL_TEKTON_CHAINS} == "true" ]] && run_with_hooks install-chains install_chains
   [[ ${INSTALL_TEKTON_DASHBOARD} == "true" ]] && run_with_hooks install-dashboard install_dashboard
+  [[ ${INSTALL_KUEUE} == "true" ]] && run_with_hooks install-kueue install_kueue
 
   # PAC (optional)
   [[ ${INSTALL_PAC} == "true" ]] && {
@@ -920,17 +1038,24 @@ all() {
   run_hook post-all
 }
 
+# Prints a saved preference, or the default when it is missing. jq's `//`
+# would also replace a saved false.
+preference() {
+  jq -r --arg key "$1" --argjson default "$2" '.[$key] | if . == null then $default else . end' "${PREFERENCES_FILE}"
+}
+
 # Load preferences from JSON file
 load_preferences() {
   if [[ -f ${PREFERENCES_FILE} ]]; then
-    INSTALL_PAC=$(jq -r '.pac // true' "${PREFERENCES_FILE}")
-    INSTALL_TEKTON_TRIGGERS=$(jq -r '.tekton_triggers // false' "${PREFERENCES_FILE}")
-    INSTALL_TEKTON_CHAINS=$(jq -r '.tekton_chains // false' "${PREFERENCES_FILE}")
-    INSTALL_TEKTON_DASHBOARD=$(jq -r '.tekton_dashboard // true' "${PREFERENCES_FILE}")
-    INSTALL_FORGE=$(jq -r '.forgejo // true' "${PREFERENCES_FILE}")
-    INSTALL_POSTGRESQL=$(jq -r '.postgresql // false' "${PREFERENCES_FILE}")
-    INSTALL_CUSTOM_OBJECT_ENABLED=$(jq -r '.custom_objects // false' "${PREFERENCES_FILE}")
-    INSTALL_GITHUB_SECOND_CTRL=$(jq -r '.github_second_ctrl // false' "${PREFERENCES_FILE}")
+    INSTALL_PAC=$(preference pac true)
+    INSTALL_TEKTON_TRIGGERS=$(preference tekton_triggers false)
+    INSTALL_TEKTON_CHAINS=$(preference tekton_chains false)
+    INSTALL_TEKTON_DASHBOARD=$(preference tekton_dashboard true)
+    INSTALL_FORGE=$(preference forgejo true)
+    INSTALL_POSTGRESQL=$(preference postgresql false)
+    INSTALL_KUEUE=$(preference kueue false)
+    INSTALL_CUSTOM_OBJECT_ENABLED=$(preference custom_objects false)
+    INSTALL_GITHUB_SECOND_CTRL=$(preference github_second_ctrl false)
     return 0
   fi
   return 1
@@ -946,6 +1071,7 @@ save_preferences() {
     --argjson dashboard "${INSTALL_TEKTON_DASHBOARD:-true}" \
     --argjson forgejo "${INSTALL_FORGE:-true}" \
     --argjson postgresql "${INSTALL_POSTGRESQL:-false}" \
+    --argjson kueue "${INSTALL_KUEUE:-false}" \
     --argjson custom_objects "${INSTALL_CUSTOM_OBJECT_ENABLED:-false}" \
     --argjson github_second "${INSTALL_GITHUB_SECOND_CTRL:-false}" \
     '{
@@ -955,6 +1081,7 @@ save_preferences() {
       tekton_dashboard: $dashboard,
       forgejo: $forgejo,
       postgresql: $postgresql,
+      kueue: $kueue,
       custom_objects: $custom_objects,
       github_second_ctrl: $github_second
     }' >"${PREFERENCES_FILE}"
@@ -978,6 +1105,7 @@ build_component_menu() {
   echo "Tekton Dashboard"
   echo "Forgejo"
   echo "PostgreSQL"
+  echo "Kueue"
   [[ -n ${INSTALL_CUSTOM_OBJECT:-} ]] && echo "Custom Objects"
   if pac_secrets_complete second; then
     echo "GitHub Second Controller"
@@ -993,6 +1121,7 @@ get_preselected_items() {
   [[ ${INSTALL_TEKTON_DASHBOARD} == "true" ]] && selected+=("Tekton Dashboard")
   [[ ${INSTALL_FORGE} == "true" ]] && selected+=("Forgejo")
   [[ ${INSTALL_POSTGRESQL} == "true" ]] && selected+=("PostgreSQL")
+  [[ ${INSTALL_KUEUE} == "true" ]] && selected+=("Kueue")
   [[ ${INSTALL_CUSTOM_OBJECT_ENABLED} == "true" ]] && selected+=("Custom Objects")
   [[ ${INSTALL_GITHUB_SECOND_CTRL} == "true" ]] && selected+=("GitHub Second Controller")
   printf '%s\n' "${selected[@]}"
@@ -1009,6 +1138,7 @@ parse_menu_selections() {
   INSTALL_TEKTON_DASHBOARD="false"
   INSTALL_FORGE="false"
   INSTALL_POSTGRESQL="false"
+  INSTALL_KUEUE="false"
   INSTALL_CUSTOM_OBJECT_ENABLED="false"
   INSTALL_GITHUB_SECOND_CTRL="false"
 
@@ -1032,6 +1162,9 @@ parse_menu_selections() {
       ;;
     "PostgreSQL")
       INSTALL_POSTGRESQL="true"
+      ;;
+    "Kueue")
+      INSTALL_KUEUE="true"
       ;;
     "Custom Objects")
       INSTALL_CUSTOM_OBJECT_ENABLED="true"
@@ -1088,6 +1221,7 @@ show_selected_components() {
   [[ ${INSTALL_TEKTON_DASHBOARD} == "true" ]] && echo " - Tekton Dashboard"
   [[ ${INSTALL_FORGE} == "true" ]] && echo " - Forgejo"
   [[ ${INSTALL_POSTGRESQL} == "true" ]] && echo " - PostgreSQL"
+  [[ ${INSTALL_KUEUE} == "true" ]] && echo " - Kueue (one PipelineRun at a time in: ${KUEUE_NAMESPACES})"
   [[ -n ${INSTALL_CUSTOM_OBJECT:-} && ${INSTALL_CUSTOM_OBJECT_ENABLED} == "true" ]] && echo " - Custom Objects"
   [[ ${INSTALL_GITHUB_SECOND_CTRL} == "true" ]] && echo " - GitHub Second Controller"
   echo ""
@@ -1191,6 +1325,10 @@ execute_action() {
     ;;
   --install-dashboard)
     run_with_hooks install-dashboard install_dashboard
+    exit
+    ;;
+  --install-kueue)
+    run_with_hooks install-kueue install_kueue
     exit
     ;;
   --install-triggers)

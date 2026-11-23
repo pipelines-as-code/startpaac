@@ -54,6 +54,13 @@ elif tool == "kubectl":
         sys.exit(71)
     if "rollout" in args and os.environ.get("FAKE_FAIL_ROLLOUT"):
         sys.exit(int(os.environ["FAKE_FAIL_ROLLOUT"]))
+    if args and args[0] == "apply":
+        with open(state.parent / "applied", "a") as applied:
+            for index, arg in enumerate(args[:-1]):
+                if arg == "-f" and args[index + 1] != "-":
+                    applied.write("# " + args[index + 1] + "\n" + pathlib.Path(args[index + 1]).read_text() + "\n")
+                    if args[index + 1].endswith("kueue-config.yaml"):
+                        (state.parent / "kueue-config").write_text(pathlib.Path(args[index + 1]).read_text())
     if "--kubeconfig=/dev/stdin" in args:
         sys.stdin.read()
     if "config" in args and "view" in args:
@@ -91,6 +98,11 @@ elif tool == "kubectl":
     elif args[0] == "apply" and os.environ.get("FAKE_APPLY_TARGET"):
         path = pathlib.Path(os.environ["KUBECONFIG"]).resolve()
         pathlib.Path(os.environ["FAKE_APPLY_TARGET"]).write_text(str(path))
+    elif args[:3] == ["get", "configmap", "kueue-manager-config"]:
+        if (state.parent / "kueue-config").exists():
+            print((state.parent / "kueue-config").read_text())
+    elif args[:2] == ["get", "namespaces"] and "-l" in args:
+        print(os.environ.get("FAKE_KUEUE_NAMESPACES", ""))
     elif "get" in args and "ep" in args:
         print("127.0.0.1")
     elif any("jsonpath=" in arg for arg in args):
@@ -103,7 +115,10 @@ elif tool == "curl":
     if os.environ.get("FAKE_FAIL_CURL"):
         sys.exit(1)
     if "-o" in args:
-        pathlib.Path(args[args.index("-o") + 1]).write_text("{}")
+        body = "{}"
+        if any("tekton-kueue" in arg for arg in args):
+            body = "webhooks:\n  - admissionReviewVersions:\n      - v1\n    name: pipelinerun-kueue-defaulter.tekton-kueue.io\n"
+        pathlib.Path(args[args.index("-o") + 1]).write_text(body)
 elif tool == "helm":
     if os.environ.get("FAKE_HELM_CHECK_TARGET") and (
         os.environ.get("HELM_KUBECONTEXT") != "kind-kind"
@@ -125,8 +140,10 @@ elif tool == "ko":
     print("{}")
 elif tool == "systemctl":
     sys.exit(0 if os.environ.get("FAKE_FORWARDER_RUNNING") and "is-active" in args else 1)
+elif tool == "gum" and args[0] == "choose":
+    print(os.environ.get("FAKE_GUM_CHOICES", ""))
 elif tool == "gum" and args[0] == "confirm":
-    sys.exit(1)
+    sys.exit(0 if os.environ.get("FAKE_GUM_YES") and os.environ["FAKE_GUM_YES"] in args[-1] else 1)
 '''
 
 
@@ -881,6 +898,104 @@ class AgentCliTest(unittest.TestCase):
     def test_e2e_config_override_requires_value(self):
         data = json.loads(self.run_cli("--doctor", "--e2e-config-override", "--output=json", code=2).stdout)
         self.assertEqual(data["errors"][0]["code"], "invalid_arguments")
+
+    def kueue_commands(self):
+        return [cmd for cmd in self.commands() if any("kueue" in arg for arg in cmd)]
+
+    def test_install_kueue_is_a_legacy_action(self):
+        self.assertIn("--install-kueue", self.run_cli("--help").stdout)
+        self.assertIn("--install-kueue", (ROOT / "misc/_startpaac").read_text())
+        for args in [("--install-kueue", "--non-interactive"), ("--install-kueue", "--plan"), ("--install-kueue=x",),
+                ("--install-kueue", "--install-tekton")]:
+            with self.subTest(args=args):
+                self.run_cli(*args, code=2)
+
+    def test_install_kueue_deploys_scoped_queue_with_hooks(self):
+        self.existing_cluster()
+        hooks = self.home / ".config/startpaac/hooks"
+        hooks.mkdir(parents=True)
+        hook_log = self.base / "kueue-hooks"
+        for phase in ["pre", "post"]:
+            hook = hooks / (phase + "-install-kueue")
+            hook.write_text(f'#!/bin/bash\nprintf "%s\\n" {phase} >> "{hook_log}"\n')
+            hook.chmod(0o755)
+        self.env.update(KUEUE_NAMESPACES="default sample", FAKE_KUEUE_NAMESPACES="default old")
+        self.run_cli("--install-kueue", redacted=False)
+        self.assertEqual(hook_log.read_text().splitlines(), ["pre", "post"])
+        commands = self.commands()
+        for version in ["cert-manager/releases/download/v1.19.2/", "kueue/releases/download/v0.16.6/",
+                "tekton-kueue/previous/v0.4.3/"]:
+            self.assertTrue(any(cmd[0] == "curl" and any(version in arg for arg in cmd) for cmd in commands), version)
+        for namespace, name in [("cert-manager", "cert-manager-webhook"), ("kueue-system", "kueue-controller-manager"),
+                ("tekton-kueue", "tekton-kueue-webhook")]:
+            self.assertIn(["kubectl", "rollout", "status", "deployment/" + name, "-n", namespace, "--timeout=300s"], commands)
+        applied = (self.base / "applied").read_text()
+        self.assertIn("    name: pipelinerun-kueue-defaulter.tekton-kueue.io\n    namespaceSelector:\n"
+            "      matchLabels:\n        startpaac.dev/kueue: enabled\n", applied)
+        self.assertIn("- PipelineRun.v1.tekton.dev", applied)
+        self.assertIn("nominalQuota: 1", applied)
+        for namespace in ["default", "sample"]:
+            self.assertIn(["kubectl", "label", "namespace", namespace, "startpaac.dev/kueue=enabled", "--overwrite"], commands)
+            self.assertIn(["kubectl", "apply", "-n", namespace, "-f", "-"], commands)
+        self.assertIn(["kubectl", "label", "namespace", "old", "startpaac.dev/kueue-"], commands)
+        self.assertIn(["kubectl", "delete", "localqueue", "pipelines-queue", "-n", "old", "--ignore-not-found"], commands)
+        self.assertFalse(any(cmd[:4] == ["kubectl", "label", "namespace", "default"] and "startpaac.dev/kueue-" in cmd
+            for cmd in commands))
+
+    def test_kueue_restarts_only_when_its_configuration_changes(self):
+        self.existing_cluster()
+        restart = ["kubectl", "rollout", "restart", "deployment/kueue-controller-manager", "-n", "kueue-system"]
+        cases = [("fresh install", None, True), ("unchanged", "same", False), ("changed", "old configuration", True)]
+        for name, before, restarted in cases:
+            with self.subTest(name):
+                if before == "old configuration":
+                    (self.base / "kueue-config").write_text(before)
+                self.log.unlink(missing_ok=True)
+                self.run_cli("--install-kueue", redacted=False)
+                self.assertEqual(restart in self.commands(), restarted)
+
+    def test_install_kueue_stops_when_a_controller_is_not_ready(self):
+        self.existing_cluster()
+        hooks = self.home / ".config/startpaac/hooks"
+        hooks.mkdir(parents=True)
+        marker = self.base / "post-hook-ran"
+        hook = hooks / "post-install-kueue"
+        hook.write_text(f'#!/bin/bash\ntouch "{marker}"\n')
+        hook.chmod(0o755)
+        self.env["FAKE_FAIL_ROLLOUT"] = "3"
+        result = subprocess.run(["/bin/bash", str(ROOT / "startpaac"), "--install-kueue"], env=self.env, cwd=self.pac,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertFalse(any(cmd[:2] == ["kubectl", "label"] for cmd in self.commands()))
+        self.assertNotIn("startpaac-pipelines", (self.base / "applied").read_text())
+
+    def test_kueue_is_off_by_default_and_saved_from_the_menu(self):
+        preferences = self.home / ".config/startpaac/preferences.json"
+        env = dict(self.env, FAKE_GUM_YES="Save")
+        self.run_cli(code=1, env=env, redacted=False)
+        choose = [cmd for cmd in self.commands() if cmd[:2] == ["gum", "choose"]][-1]
+        self.assertFalse(any("Kueue" in arg for arg in choose))
+        self.assertFalse(json.loads(preferences.read_text())["kueue"])
+
+        env["FAKE_GUM_CHOICES"] = "Kueue"
+        self.run_cli("--menu", code=1, env=env, redacted=False)
+        self.assertTrue(json.loads(preferences.read_text())["kueue"])
+        self.assertEqual(self.kueue_commands(), [])
+
+    def test_saved_kueue_preference_installs_it_in_full_runs_but_not_up(self):
+        preferences = self.home / ".config/startpaac/preferences.json"
+        preferences.parent.mkdir(parents=True)
+        preferences.write_text('{"pac":false,"tekton_dashboard":false,"forgejo":false,"kueue":true}')
+        self.run_cli("--ci", redacted=False)
+        self.assertTrue(any(cmd[:4] == ["kubectl", "rollout", "status", "deployment/kueue-controller-manager"]
+            for cmd in self.commands()))
+        self.assertFalse(any(cmd[0] == "ko" or "forgejo" in cmd for cmd in self.commands()))
+
+        self.log.unlink()
+        self.env["INSTALL_KUEUE"] = "true"
+        self.run_cli("--up")
+        self.assertEqual(self.kueue_commands(), [])
 
 
 if __name__ == "__main__":
