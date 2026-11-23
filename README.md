@@ -44,8 +44,10 @@ EOF
 ```
 
 The GitHub App values do not go in that file. They go in a separate YAML file
-that [PAC_E2E_CONFIG](https://github.com/tektoncd/pipelines-as-code/tree/main/test#yaml-configuration-file points to, either a path or a `pass:<entry>` reference.
-The first run creates an empty one for you.
+that `PAC_E2E_CONFIG` points to, either a path or a `pass:<entry>` reference.
+The first run creates an empty one for you. See the
+[PAC_E2E_CONFIG format](https://github.com/tektoncd/pipelines-as-code/tree/main/test#yaml-configuration-file)
+for the file itself.
 
 If startpaac runs interactively and finds no credentials, it creates a GitHub
 App for you. It asks whether the App belongs to your account or to an
