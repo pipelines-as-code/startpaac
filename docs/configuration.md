@@ -52,7 +52,7 @@ the environment or `~/.config/startpaac/config`) or `--e2e-config FILE|pass:<ent
 
 ```shell
 PAC_E2E_CONFIG=./test/e2e-config.yaml ./startpaac --ci -a
-# or directly from password-store (never stored plaintext on disk)
+# or directly from password-store (avoids a persistent plaintext file on disk)
 PAC_E2E_CONFIG=pass:pac/e2e-config ./startpaac --up
 # or via CLI flag
 ./startpaac --e2e-config pass:pac/e2e-config --up
