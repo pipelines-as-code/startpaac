@@ -39,30 +39,47 @@ mkdir -p $HOME/.config/startpaac
 cat <<EOF > $HOME/.config/startpaac/config
 TARGET_HOST=local
 PAC_DIR=~/go/src/github.com/tektoncd/pipelines-as-code
-PAC_SECRET_FOLDER=~/secrets
+PAC_E2E_CONFIG=~/.local/share/startpaac/e2e-config.yaml
 EOF
 ```
 
-A GitHub App is created automatically: when `startpaac` runs interactively
-and finds no credentials, it opens your browser on GitHub's App Manifest flow
-(personal account or organization), generates a webhook relay URL on
+The GitHub App values do not go in that file. They go in a separate YAML file
+that `PAC_E2E_CONFIG` points to, either a path or a `pass:<entry>` reference.
+The first run creates an empty one for you.
+
+If startpaac runs interactively and finds no credentials, it creates a GitHub
+App for you. It asks whether the App belongs to your account or to an
+organization, generates a webhook relay URL on
 [hook.pipelinesascode.com](https://hook.pipelinesascode.com) (development only,
-no security guarantees), stores the credentials (in `pass` if configured,
-otherwise in `~/.local/share/startpaac/secrets`), and offers to run
-[gosmee](https://github.com/chmouel/gosmee) as a user service (systemd on
-Linux, LaunchAgent on macOS) to forward webhooks to your local cluster.
+no security guarantees), saves the credentials in the `PAC_E2E_CONFIG` file,
+then offers to start [gosmee](https://github.com/chmouel/gosmee) as a user
+service (systemd on Linux, LaunchAgent on macOS) so webhooks reach your local
+cluster.
 
 After creating the app, install it on the repositories you want to use with PAC.
 
-If you already have a GitHub App, it is better to reuse it instead of creating a
-new one every time. Store your existing credentials and skip the automatic setup:
+If you already have a GitHub App, reuse it. Put its values in that YAML file
+and the automatic setup will leave you alone:
 
 ```shell
-mkdir -p ~/secrets
-for i in github-application-id github-private-key smee webhook.secret; do
-  ${EDITOR:-vi} ~/secrets/$i
-done
+${EDITOR:-vi} ~/.local/share/startpaac/e2e-config.yaml
 ```
+
+```yaml
+common:
+  webhook_secret: "..."
+
+github:
+  application_id: "123456"
+  private_key: |
+    -----BEGIN RSA PRIVATE KEY-----
+    ...
+  smee_url: "https://hook.pipelinesascode.com/..."
+```
+
+Those names come from the Pipelines-as-Code E2E config. See
+[docs/configuration.md](docs/configuration.md#secrets-management) for all of
+them.
 
 Run the interactive installer:
 
@@ -136,14 +153,18 @@ Minimal config in `~/.config/startpaac/config`:
 ```shell
 TARGET_HOST=local
 PAC_DIR=~/path/to/pipelines-as-code
-PAC_SECRET_FOLDER=~/secrets
+PAC_E2E_CONFIG=~/.local/share/startpaac/e2e-config.yaml
 ```
+
+`PAC_SECRET_FOLDER` no longer exists. startpaac reads the GitHub App values from
+the YAML file in `PAC_E2E_CONFIG`, or from whatever you pass to `--e2e-config`.
+If you only want to swap a few of them, use `--e2e-config-override`.
 
 See [docs/configuration.md](docs/configuration.md) for the full reference (remote VM setup, secrets management, hooks, PostgreSQL, preferences).
 
 ## Prerequisites
 
-docker, kind, helm, kubectl, jq, minica
+docker, kind, helm, kubectl, jq, minica, yq (or python3 with PyYAML)
 
 Optional:
 
