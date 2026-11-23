@@ -430,10 +430,18 @@ pac_e2e_config_write_primary() {
       echo "Error: pass is required to write ${cfg_path}." >&2
       return 1
     }
-    local existing=""
-    existing=$(pass show "${entry}" 2>/dev/null || true)
+    local store_dir=${PASSWORD_STORE_DIR:-${HOME}/.password-store}
+    local existing="" rendered=""
+    if [[ -f "${store_dir}/${entry}.gpg" ]]; then
+      if ! existing=$(pass show "${entry}" 2>/dev/null); then
+        echo "Error: existing pass entry '${entry}' could not be decrypted; aborting to avoid overwriting it." >&2
+        return 1
+      fi
+    else
+      existing=$(pass show "${entry}" 2>/dev/null || true)
+    fi
     if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
-      printf '%s' "${existing}" | python3 -c '
+      rendered=$(printf '%s' "${existing}" | python3 -c '
 import os, sys, yaml
 
 outdir = sys.argv[1]
@@ -458,11 +466,9 @@ data["github"]["application_id"] = read_key("github-application-id").strip()
 data["github"]["private_key"] = LiteralStr(read_key("github-private-key"))
 data["github"]["smee_url"] = read_key("smee").strip()
 yaml.dump(data, sys.stdout, sort_keys=False, default_flow_style=False)
-' "${outdir}" | pass insert -m -f "${entry}" >/dev/null
-      return $?
-    fi
-    if [[ -n ${existing} && $(pac_yaml_parser 2>/dev/null || true) == yq-go ]]; then
-      printf '%s' "${existing}" |
+' "${outdir}") || return 1
+    elif [[ -n ${existing} && $(pac_yaml_parser 2>/dev/null || true) == yq-go ]]; then
+      rendered=$(printf '%s' "${existing}" |
         WEBHOOK_SECRET=$(tr -d '\r\n' <"${outdir}/webhook.secret") \
         APP_ID=$(tr -d '\r\n' <"${outdir}/github-application-id") \
         PRIV_KEY=$(cat "${outdir}/github-private-key") \
@@ -472,14 +478,12 @@ yaml.dump(data, sys.stdout, sort_keys=False, default_flow_style=False)
           .github.application_id = strenv(APP_ID) |
           .github.private_key = strenv(PRIV_KEY) |
           .github.smee_url = strenv(SMEE_URL)
-        ' - | pass insert -m -f "${entry}" >/dev/null
-      return $?
-    fi
-    if [[ -n ${existing} ]]; then
+        ' -) || return 1
+    elif [[ -n ${existing} ]]; then
       echo "Error: PyYAML or Go yq is required to safely update existing ${cfg_path} without losing other sections." >&2
       return 1
-    fi
-    python3 - "${outdir}" <<'PY' | pass insert -m -f "${entry}" >/dev/null
+    else
+      rendered=$(python3 - "${outdir}" <<'PY'
 import os, sys
 outdir = sys.argv[1]
 def read_key(name):
@@ -495,6 +499,10 @@ sys.stdout.write(
     f"  smee_url: {read_key('smee').strip()!r}\n"
 )
 PY
+      ) || return 1
+    fi
+    [[ -n ${rendered} ]] || return 1
+    printf '%s\n' "${rendered}" | pass insert -m -f "${entry}" >/dev/null
     return $?
   fi
   (
@@ -545,12 +553,12 @@ PY
           APP_ID=$(tr -d '\r\n' <"${outdir}/github-application-id") \
           PRIV_KEY=$(cat "${outdir}/github-private-key") \
           SMEE_URL=$(tr -d '\r\n' <"${outdir}/smee") \
-          yq eval -i '
-            .common.webhook_secret = strenv(WEBHOOK_SECRET) |
-            .github.application_id = strenv(APP_ID) |
-            .github.private_key = strenv(PRIV_KEY) |
-            .github.smee_url = strenv(SMEE_URL)
-          ' "${cfg_path}"
+        yq eval -i '
+          .common.webhook_secret = strenv(WEBHOOK_SECRET) |
+          .github.application_id = strenv(APP_ID) |
+          .github.private_key = strenv(PRIV_KEY) |
+          .github.smee_url = strenv(SMEE_URL)
+        ' "${cfg_path}" || return 1
         chmod 600 "${cfg_path}"
         return $?
       fi
