@@ -337,8 +337,10 @@ class AgentCliTest(unittest.TestCase):
 
     def test_go_is_required_before_a_source_build(self):
         (self.bin / "go").unlink()
-        for tool in ["cat", "jq", "sed", "mktemp", "yq"]:
+        for tool in ["cat", "jq", "sed", "mktemp"]:
             (self.bin / tool).symlink_to(shutil.which(tool))
+        yaml_tool = shutil.which("yq") or shutil.which("python3")
+        (self.bin / pathlib.Path(yaml_tool).name).symlink_to(yaml_tool)
         env = dict(self.env, PATH=str(self.bin))
         for args in [("--doctor",), ("--up", "--plan"), ("--up",)]:
             with self.subTest(args=args):

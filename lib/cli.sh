@@ -614,7 +614,7 @@ cli_main() {
   if [[ ${CLI_MANAGED} == true ]]; then
     export STARTPAAC_CREATE_CONFIG=false
   fi
-  local requested_noninteractive=${CLI_NON_INTERACTIVE_OVERRIDE} requested_ci=${CLI_CI_OVERRIDE} requested_menu=${CLI_MENU_OVERRIDE} requested_e2e_config=${CLI_E2E_CONFIG_OVERRIDE}
+  local requested_noninteractive=${CLI_NON_INTERACTIVE_OVERRIDE} requested_ci=${CLI_CI_OVERRIDE} requested_menu=${CLI_MENU_OVERRIDE} requested_e2e_config=${CLI_E2E_CONFIG_OVERRIDE} env_e2e_config=${PAC_E2E_CONFIG-}
   [[ -n ${requested_noninteractive} ]] || unset NON_INTERACTIVE
   [[ -n ${requested_ci} ]] || unset CI_MODE
   [[ -n ${requested_menu} ]] || unset FORCE_INTERACTIVE
@@ -622,7 +622,11 @@ cli_main() {
   NON_INTERACTIVE=${requested_noninteractive:-${NON_INTERACTIVE:-false}}
   CI_MODE=${requested_ci:-${CI_MODE:-false}}
   FORCE_INTERACTIVE=${requested_menu:-${FORCE_INTERACTIVE:-false}}
-  [[ -z ${requested_e2e_config} ]] || PAC_E2E_CONFIG=${requested_e2e_config}
+  if [[ -n ${requested_e2e_config} ]]; then
+    PAC_E2E_CONFIG=${requested_e2e_config}
+  elif [[ -n ${env_e2e_config} ]]; then
+    PAC_E2E_CONFIG=${env_e2e_config}
+  fi
   if [[ -n ${PAC_E2E_CONFIG:-} ]]; then
     if ! pac_e2e_config_is_pass "${PAC_E2E_CONFIG}"; then
       PAC_E2E_CONFIG=${PAC_E2E_CONFIG/#\~/${HOME}}
