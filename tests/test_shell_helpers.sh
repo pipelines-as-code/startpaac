@@ -120,6 +120,14 @@ github:
 EOF
 assert_not "collection-valued private_key fails pac_secrets_complete" \
   env PAC_E2E_CONFIG="${e2e_collection}" /bin/bash -c 'source "$1/lib/common.sh"; pac_secrets_complete primary' _ "${SP}"
+assert_not "collection-valued private_key fails pac_e2e_config_valid" \
+  pac_e2e_config_valid "${e2e_collection}"
+
+# False-valued boolean scalars are preserved across parser backends
+e2e_bool="${TESTTMP}/e2e-bool.yaml"
+printf 'common:\n  webhook_secret: false\n' >"${e2e_bool}"
+assert "boolean false scalar is read without error" \
+  test "$(pac_e2e_config_read common webhook_secret "${e2e_bool}")" = "false"
 
 # Malformed YAML fails closed with nonzero exit status
 e2e_malformed="${TESTTMP}/e2e-malformed.yaml"
