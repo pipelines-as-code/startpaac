@@ -8,6 +8,19 @@ on:
   workflow_dispatch:
 
 jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout startpaac repository
+        uses: actions/checkout@v4
+
+      - name: Run shell helper tests
+        run: ./tests/test_shell_helpers.sh
+
+      - name: Run Python CLI and helper tests
+        run: python3 -m unittest discover -s tests -v
+
   test-startpaac:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -52,6 +65,7 @@ jobs:
           ko version
           minica --version || echo "minica installed"
           jq --version
+          yq --version
 
       - name: Set up Kind cluster
         uses: helm/kind-action@v1.12.0
@@ -60,22 +74,27 @@ jobs:
 
       - name: Configure startpaac
         run: |
-          mkdir -p $HOME/.config/startpaac
-          mkdir -p $HOME/secrets
+          mkdir -p "$HOME/.config/startpaac"
 
-          # Create dummy secret files for CI testing
-          echo "https://smee.io/dummy-ci-webhook" > $HOME/secrets/smee
-          echo "dummy-github-app-id" > $HOME/secrets/github-application-id
-          echo "dummy-private-key" > $HOME/secrets/github-private-key
-          echo "dummy-webhook-secret" > $HOME/secrets/webhook.secret
+          # Create dummy E2E YAML config for CI testing
+          cat > "$HOME/e2e-config.yaml" <<'EOF'
+          common:
+            webhook_secret: "dummy-webhook-secret"
+          github:
+            application_id: "dummy-github-app-id"
+            private_key: |
+              dummy-private-key
+            smee_url: "https://smee.io/dummy-ci-webhook"
+          EOF
+          chmod 600 "$HOME/e2e-config.yaml"
 
-          cat > $HOME/.config/startpaac/config <<EOF
+          cat > "$HOME/.config/startpaac/config" <<EOF
           TARGET_HOST=local
           PAC_DIR=${{ github.workspace }}/pipelines-as-code
-          PAC_SECRET_FOLDER=$HOME/secrets
+          PAC_E2E_CONFIG=$HOME/e2e-config.yaml
           EOF
           echo "=== startpaac config ==="
-          cat $HOME/.config/startpaac/config
+          cat "$HOME/.config/startpaac/config"
 
       - name: Run startpaac -a (non-interactive full installation)
         timeout-minutes: 30
