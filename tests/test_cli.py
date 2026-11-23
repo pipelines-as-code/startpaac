@@ -845,6 +845,43 @@ class AgentCliTest(unittest.TestCase):
             any("delete" in cmd and "pipelines-as-code-secret" in cmd for cmd in self.commands())
         )
 
+    def test_e2e_config_override_supplies_missing_field_and_validates_existence(self):
+        base = self.base / "base-no-smee.yaml"
+        base.write_text(
+            "common:\n"
+            "  webhook_secret: yaml-secret\n"
+            "github:\n"
+            "  application_id: '11111'\n"
+            "  private_key: |\n"
+            "    -----BEGIN RSA PRIVATE KEY-----\n"
+            "    TESTKEY\n"
+            "    -----END RSA PRIVATE KEY-----\n"
+        )
+        overlay = self.base / "overlay.yaml"
+        overlay.write_text("github:\n  smee_url: https://hook.pipelinesascode.com/overlay-test\n")
+        env = dict(self.env, PAC_E2E_CONFIG=str(base))
+        result = subprocess.run(
+            [str(ROOT / "startpaac"), "--doctor", "--e2e-config-override", overlay.name, "--output=json"],
+            cwd=str(self.base), env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = json.loads(result.stdout)
+        self.assertTrue(data["ok"], data)
+        checks = {c["id"]: c["ok"] for c in data["data"]["checks"]}
+        self.assertTrue(checks.get("e2e_config_override"))
+        self.assertTrue(checks.get("credentials"))
+
+        missing = self.base / "missing-overlay.yaml"
+        data = json.loads(
+            self.run_cli("--doctor", f"--e2e-config-override={missing}", "--output=json", code=1).stdout
+        )
+        self.assertFalse(data["ok"])
+        self.assertIn("e2e_config_override", {e["code"] for e in data["errors"]})
+
+    def test_e2e_config_override_requires_value(self):
+        data = json.loads(self.run_cli("--doctor", "--e2e-config-override", "--output=json", code=2).stdout)
+        self.assertEqual(data["errors"][0]["code"], "invalid_arguments")
+
 
 if __name__ == "__main__":
     unittest.main()

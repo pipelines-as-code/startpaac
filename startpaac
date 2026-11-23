@@ -125,6 +125,9 @@ EOF
   if [[ -n ${PAC_E2E_CONFIG:-} ]]; then
     echo "PAC_E2E_CONFIG: ${PAC_E2E_CONFIG}"
   fi
+  if [[ -n ${PAC_E2E_CONFIG_OVERRIDE:-} ]]; then
+    echo "PAC_E2E_CONFIG_OVERRIDE: ${PAC_E2E_CONFIG_OVERRIDE}"
+  fi
   if [[ "${USE_NODEPORT_WEBHOOK}" == "true" ]]; then
     echo "PAC WEBHOOK: ${PAC_WEB_URL} (NodePort - no gosmee needed)"
   else
@@ -597,6 +600,14 @@ configure_pac() {
       cli_error credentials_unavailable "Invalid YAML in ${PAC_E2E_CONFIG}; existing cluster secrets were left unchanged." 'Fix the YAML syntax and retry.'
     else
       echo "Error: invalid YAML in ${PAC_E2E_CONFIG}; existing cluster secrets were left unchanged." >&2
+    fi
+    return 1
+  fi
+  if [[ -n ${PAC_E2E_CONFIG_OVERRIDE:-} ]] && ! pac_e2e_config_valid "${PAC_E2E_CONFIG_OVERRIDE}"; then
+    if [[ ${NON_INTERACTIVE:-false} == true ]]; then
+      cli_error credentials_unavailable "Invalid or unreadable YAML in ${PAC_E2E_CONFIG_OVERRIDE}; existing cluster secrets were left unchanged." 'Fix PAC_E2E_CONFIG_OVERRIDE and retry.'
+    else
+      echo "Error: invalid or unreadable YAML in ${PAC_E2E_CONFIG_OVERRIDE}; existing cluster secrets were left unchanged." >&2
     fi
     return 1
   fi

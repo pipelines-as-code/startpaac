@@ -21,6 +21,10 @@ elif [[ ${STARTPAAC_CREATE_CONFIG:-true} == true && -z ${PAC_DIR:-} ]]; then
 # PAC_E2E_CONFIG=pass:pac/e2e-config
 # PAC_E2E_CONFIG=~/.local/share/startpaac/e2e-config.yaml
 #
+# Optional overlay YAML file or pass:<entry> that overrides individual fields
+# from PAC_E2E_CONFIG (e.g. swapping only github.* for a different GitHub App).
+# PAC_E2E_CONFIG_OVERRIDE=pass:pac/my-app-override
+#
 # Hostname of the GitHub Enterprise instance used by the second controller.
 # Use only the hostname, without an https:// prefix, path, or port.
 # PAC_GITHUB_SECOND_HOSTNAME=ghe.example.com
