@@ -205,6 +205,7 @@ unset PAC_E2E_CONFIG
 
 fakebin="${TESTTMP}/bin"
 mkdir -p "${fakebin}"
+export PATH="${fakebin}:${PATH}"
 
 # --- gosmee forwarder safety ---
 out=$(start_gosmee_forwarder gosmee "" "http://target" 2>&1)
