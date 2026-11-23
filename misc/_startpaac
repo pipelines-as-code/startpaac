@@ -71,6 +71,7 @@ _arguments -C \
     '--setup-forgejo-sample[Create sample Forgejo repositories]' \
     '--debug-image[Use a debug image]' \
     '--e2e-config[Path to PAC E2E YAML config]:file:_files' \
+    '--e2e-config-override[Overlay YAML config on top of PAC_E2E_CONFIG]:file:_files' \
     '--setup-github-app[Create a GitHub App and store its credentials]' \
     '--configure-pac[Configure PAC]' \
     '--configure-pac-target[Configure PAC on an existing cluster]:kubeconfig:_files:namespace: :e2e config:_files' \

@@ -248,25 +248,28 @@ check_tools() {
       return 1
     fi
   done
-  if [[ -n ${PAC_E2E_CONFIG:-""} ]]; then
-    if pac_e2e_config_is_pass "${PAC_E2E_CONFIG}"; then
+  local cfg_var cfg_val
+  for cfg_var in PAC_E2E_CONFIG PAC_E2E_CONFIG_OVERRIDE; do
+    cfg_val=${!cfg_var:-}
+    [[ -n ${cfg_val} ]] || continue
+    if pac_e2e_config_is_pass "${cfg_val}"; then
       if ! command -v pass &>/dev/null; then
-        echo "Error: pass is not installed or not in PATH and PAC_E2E_CONFIG uses pass: (${PAC_E2E_CONFIG})."
+        echo "Error: pass is not installed or not in PATH and ${cfg_var} uses pass: (${cfg_val})."
         return 1
       fi
-      if ! pac_e2e_config_exists "${PAC_E2E_CONFIG}"; then
-        echo "Error: PAC_E2E_CONFIG pass entry not readable: ${PAC_E2E_CONFIG#pass:}"
+      if ! pac_e2e_config_exists "${cfg_val}"; then
+        echo "Error: ${cfg_var} pass entry not readable: ${cfg_val#pass:}"
         return 1
       fi
-    elif [[ ! -f ${PAC_E2E_CONFIG} ]]; then
-      echo "Error: PAC_E2E_CONFIG file not found: ${PAC_E2E_CONFIG}"
+    elif [[ ! -f ${cfg_val} ]]; then
+      echo "Error: ${cfg_var} file not found: ${cfg_val}"
       return 1
     fi
     if ! pac_yaml_parser >/dev/null 2>&1; then
-      echo "Error: yq (or python3 with PyYAML) is required to read PAC_E2E_CONFIG (${PAC_E2E_CONFIG})."
+      echo "Error: yq (or python3 with PyYAML) is required to read ${cfg_var} (${cfg_val})."
       return 1
     fi
-  fi
+  done
   return 0
 }
 
@@ -348,11 +351,11 @@ pac_e2e_config_stream() {
   fi
 }
 
-# Read a scalar value from a PAC E2E YAML config file or pass:<entry> (<section>.<field>).
+# Read a scalar value from a single PAC E2E YAML config file or pass:<entry>.
 # Prints nothing when the field is missing, null, or empty.
-# Returns nonzero if the source is unreadable or the YAML parser fails.
-pac_e2e_config_read() {
-  local section=$1 field=$2 file=${3:-${PAC_E2E_CONFIG:-}}
+# Returns nonzero if the source is unreadable, malformed, or collection-valued.
+pac_e2e_config_read_one() {
+  local section=$1 field=$2 file=$3
   [[ -n ${file} ]] || return 1
   local parser
   parser=$(pac_yaml_parser) || return 1
@@ -360,10 +363,10 @@ pac_e2e_config_read() {
     set -o pipefail
     case ${parser} in
     yq-go)
-      pac_e2e_config_stream "${file}" | yq eval -r ".${section}.${field} | select(. != null and . != \"\" and kind == \"scalar\")" - 2>/dev/null
+      pac_e2e_config_stream "${file}" | yq eval -r ".${section}.${field} | select(. != null and . != \"\") | (select(kind == \"scalar\") // error(\"expected scalar\"))" - 2>/dev/null
       ;;
     yq-py)
-      pac_e2e_config_stream "${file}" | yq -r ".${section}.${field} | select(. != null and . != \"\" and type != \"array\" and type != \"object\")" - 2>/dev/null
+      pac_e2e_config_stream "${file}" | yq -r ".${section}.${field} | if . == null or . == \"\" then empty elif (type == \"array\" or type == \"object\") then error(\"expected scalar\") else . end" - 2>/dev/null
       ;;
     python)
       pac_e2e_config_stream "${file}" | python3 -c '
@@ -373,7 +376,9 @@ if not isinstance(data, dict):
     sys.exit(0)
 sec = data.get(sys.argv[1])
 val = sec.get(sys.argv[2]) if isinstance(sec, dict) else None
-if val is not None and val != "" and not isinstance(val, (dict, list)):
+if isinstance(val, (dict, list)):
+    sys.exit(1)
+if val is not None and val != "":
     sys.stdout.write(str(val))
 ' "${section}" "${field}" 2>/dev/null
       ;;
@@ -382,6 +387,25 @@ if val is not None and val != "" and not isinstance(val, (dict, list)):
       ;;
     esac
   )
+}
+
+# Read a scalar value (<section>.<field>) from PAC_E2E_CONFIG, checking
+# PAC_E2E_CONFIG_OVERRIDE first when no explicit file argument is given.
+pac_e2e_config_read() {
+  local section=$1 field=$2 explicit_file=${3:-}
+  if [[ -n ${explicit_file} ]]; then
+    pac_e2e_config_read_one "${section}" "${field}" "${explicit_file}"
+    return $?
+  fi
+  if [[ -n ${PAC_E2E_CONFIG_OVERRIDE:-} ]]; then
+    local val
+    val=$(pac_e2e_config_read_one "${section}" "${field}" "${PAC_E2E_CONFIG_OVERRIDE}") || return 1
+    if [[ -n ${val} ]]; then
+      printf '%s\n' "${val}"
+      return 0
+    fi
+  fi
+  pac_e2e_config_read_one "${section}" "${field}" "${PAC_E2E_CONFIG:-}"
 }
 
 # Wrapper around gum confirm with bash fallback
@@ -993,6 +1017,7 @@ export_hook_environment() {
         PAC_DIR
         PAC_DOMAIN
         PAC_E2E_CONFIG
+        PAC_E2E_CONFIG_OVERRIDE
         PAC_GITHUB_SECOND_HOSTNAME
         PAC_IMAGE_NONROOT
         PAC_WEBHOOK_NODEPORT

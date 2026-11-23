@@ -74,6 +74,20 @@ controller is automatically enabled when `github_enterprise` credentials are
 present in `PAC_E2E_CONFIG` and `INSTALL_GITHUB_SECOND_CTRL` is unset. Explicit
 environment variables take precedence over YAML values.
 
+#### Partial overrides (`PAC_E2E_CONFIG_OVERRIDE`)
+
+To swap a subset of fields (for example, testing with a different GitHub App
+while keeping the rest of your `PAC_E2E_CONFIG`), pass an overlay YAML file or
+`pass:<entry>` via `PAC_E2E_CONFIG_OVERRIDE` or `--e2e-config-override`:
+
+```shell
+./startpaac --e2e-config-override pass:pac/my-other-app -p
+```
+
+Any non-empty scalar field in the overlay takes precedence over `PAC_E2E_CONFIG`;
+omitted or empty fields fall back to the base config. Precedence is
+`--e2e-config-override` > `PAC_E2E_CONFIG_OVERRIDE` env > config file.
+
 ### Automatic GitHub App creation
 
 If no usable credentials are found (files missing or empty), interactive runs

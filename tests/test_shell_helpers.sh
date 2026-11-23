@@ -213,7 +213,33 @@ assert_not "missing pass:<entry> fails closed" \
   env PATH="${pass_bin}:${PATH}" PAC_E2E_CONFIG="pass:pac/missing" /bin/bash -c 'source "$1/lib/common.sh"; pac_secrets_complete primary' _ "${SP}"
 assert "pac_e2e_config_write_primary updates pass:<entry> preserving github_enterprise" \
   env PATH="${pass_bin}:${PATH}" /bin/bash -c 'source "$1/lib/common.sh"; pac_e2e_config_write_primary "pass:pac/e2e-test" "$2" && [[ $(pac_e2e_config_read github application_id "pass:pac/e2e-test") == 42424 && $(pac_e2e_config_read github_enterprise application_id "pass:pac/e2e-test") == 54321 ]]' _ "${SP}" "${ghapp_out}"
-unset PAC_E2E_CONFIG
+
+# PAC_E2E_CONFIG_OVERRIDE (partial YAML overlay)
+e2e_overlay="${TESTTMP}/e2e-overlay.yaml"
+cat >"${e2e_overlay}" <<'EOF'
+github:
+  application_id: "77777"
+  smee_url: "https://hook.pipelinesascode.com/overlay-smee"
+EOF
+assert "overlay overrides github.application_id" \
+  test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" pac_secret_read github-application-id primary)" = "77777"
+assert "overlay overrides github.smee_url" \
+  test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" get_smee_url)" = "https://hook.pipelinesascode.com/overlay-smee"
+assert "overlay falls back to base for omitted webhook_secret" \
+  test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" pac_secret_read webhook.secret primary)" = "yaml-webhook-secret"
+assert "overlay falls back to base for omitted github_enterprise section" \
+  test "$(PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_overlay}" pac_secret_read github-application-id second)" = "54321"
+assert_not "missing overlay file fails closed" \
+  env PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${TESTTMP}/no-such-overlay.yaml" /bin/bash -c 'source "$1/lib/common.sh"; pac_secrets_complete primary' _ "${SP}"
+assert_not "malformed overlay fails closed" \
+  env PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_malformed}" /bin/bash -c 'source "$1/lib/common.sh"; pac_secrets_complete primary' _ "${SP}"
+assert_not "collection-valued field in overlay fails closed instead of falling back" \
+  env PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="${e2e_collection}" /bin/bash -c 'source "$1/lib/common.sh"; pac_secrets_complete primary' _ "${SP}"
+
+cp "${e2e_overlay}" "${pass_store}/pac/e2e-overlay.yaml"
+assert "pass:<entry> overlay works on top of file base" \
+  test "$(PATH="${pass_bin}:${PATH}" PAC_E2E_CONFIG="${e2e_cfg}" PAC_E2E_CONFIG_OVERRIDE="pass:pac/e2e-overlay" /bin/bash -c 'source "$1/lib/common.sh"; pac_secret_read github-application-id primary' _ "${SP}")" = "77777"
+unset PAC_E2E_CONFIG PAC_E2E_CONFIG_OVERRIDE
 
 fakebin="${TESTTMP}/bin"
 mkdir -p "${fakebin}"

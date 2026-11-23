@@ -43,6 +43,7 @@ help() {
     '  --show-config                Show configuration' \
     '' 'Other options:' \
     '  --e2e-config FILE            Read PAC secrets and settings from an E2E YAML config' \
+    '  --e2e-config-override FILE   Overlay YAML config on top of PAC_E2E_CONFIG (file or pass:<entry>)' \
     '  -O, --scale-down NAME        Scale down a component after deployment' \
     '  -i, --menu, --interactive    Force component menu' \
     '  -R, --reset-preferences      Remove saved component preferences' \
@@ -76,6 +77,7 @@ cli_parse() {
   CLI_CI_OVERRIDE=${CI_MODE-}
   CLI_MENU_OVERRIDE=${FORCE_INTERACTIVE-}
   CLI_E2E_CONFIG_OVERRIDE=
+  CLI_E2E_CONFIG_OVERLAY_OVERRIDE=
   export CLI_E2E_CONFIG_EXPLICIT=false
   NON_INTERACTIVE=${NON_INTERACTIVE:-false}
   CI_MODE=${CI_MODE:-false}
@@ -98,7 +100,7 @@ cli_parse() {
       value=${arg#*=}
       arg=${arg%%=*}
       case ${arg} in
-      --output | --deploy-component | --scale-down | --install-skills | --e2e-config) set -- "${value}" "$@" ;;
+      --output | --deploy-component | --scale-down | --install-skills | --e2e-config | --e2e-config-override) set -- "${value}" "$@" ;;
       *) cli_usage_error "${arg} does not accept an inline value." ;;
       esac
     elif [[ ${arg} == -?* && ${arg} != --* && ${#arg} -gt 2 ]]; then
@@ -140,6 +142,12 @@ cli_parse() {
       [[ $# -gt 0 && -n $1 && $1 != -* ]] || cli_usage_error '--e2e-config requires a file path.'
       CLI_E2E_CONFIG_OVERRIDE=$1
       export CLI_E2E_CONFIG_EXPLICIT=true
+      shift
+      continue
+      ;;
+    --e2e-config-override)
+      [[ $# -gt 0 && -n $1 && $1 != -* ]] || cli_usage_error '--e2e-config-override requires a file path or pass:<entry>.'
+      CLI_E2E_CONFIG_OVERLAY_OVERRIDE=$1
       shift
       continue
       ;;
@@ -307,7 +315,7 @@ cli_cleanup() {
 }
 
 cli_describe() {
-  CLI_DATA='{"actions":[{"flag":"--up","effect":"Create or reuse local Kind; deploy core, PAC, and Dashboard"},{"flag":"--install-paac","effect":"Build, deploy, and configure PAC"},{"flag":"--deploy-component","argument":"controller|watcher|webhook","effect":"Build and deploy one PAC component"},{"flag":"--stop-kind","effect":"Delete Kind and its kubeconfig","destructive":true},{"flag":"--doctor","effect":"Inspect setup prerequisites"},{"flag":"--status","effect":"Inspect component readiness and forwarding state"},{"flag":"--describe","effect":"Describe agent interfaces without loading configuration"}],"options":{"--plan":"Read-only preview of a core action","--non-interactive":"No prompts, browser, or implicit service changes","--output":"text|json","--e2e-config":"Read PAC secrets and settings from an E2E YAML config"},"examples":["startpaac --up --plan --output json","startpaac --up --non-interactive --output json","startpaac -c watcher --non-interactive --output json","startpaac --status --output json"]}'
+  CLI_DATA='{"actions":[{"flag":"--up","effect":"Create or reuse local Kind; deploy core, PAC, and Dashboard"},{"flag":"--install-paac","effect":"Build, deploy, and configure PAC"},{"flag":"--deploy-component","argument":"controller|watcher|webhook","effect":"Build and deploy one PAC component"},{"flag":"--stop-kind","effect":"Delete Kind and its kubeconfig","destructive":true},{"flag":"--doctor","effect":"Inspect setup prerequisites"},{"flag":"--status","effect":"Inspect component readiness and forwarding state"},{"flag":"--describe","effect":"Describe agent interfaces without loading configuration"}],"options":{"--plan":"Read-only preview of a core action","--non-interactive":"No prompts, browser, or implicit service changes","--output":"text|json","--e2e-config":"Read PAC secrets and settings from an E2E YAML config","--e2e-config-override":"Overlay YAML config on top of PAC_E2E_CONFIG"},"examples":["startpaac --up --plan --output json","startpaac --up --non-interactive --output json","startpaac -c watcher --non-interactive --output json","startpaac --status --output json"]}'
 }
 
 cli_check_docker_target() {
@@ -361,6 +369,11 @@ cli_preflight() {
     ok=false
     pac_e2e_config_exists "${PAC_E2E_CONFIG:-}" && ok=true
     cli_check e2e_config_file "${ok}" "PAC_E2E_CONFIG exists: ${ok}" "Set PAC_E2E_CONFIG (or pass --e2e-config FILE or pass:<entry>) to a readable E2E YAML config."
+    if [[ -n ${PAC_E2E_CONFIG_OVERRIDE:-} ]]; then
+      ok=false
+      pac_e2e_config_exists "${PAC_E2E_CONFIG_OVERRIDE}" && ok=true
+      cli_check e2e_config_override "${ok}" "PAC_E2E_CONFIG_OVERRIDE exists: ${ok}" "Ensure PAC_E2E_CONFIG_OVERRIDE (${PAC_E2E_CONFIG_OVERRIDE}) exists and is readable."
+    fi
     ok=false
     pac_yaml_parser >/dev/null 2>&1 && ok=true
     cli_check tool_yaml_parser "${ok}" "YAML parser (yq or python3+PyYAML): ${ok}" "Install yq (or python3 with PyYAML) to read PAC_E2E_CONFIG."
@@ -614,7 +627,7 @@ cli_main() {
   if [[ ${CLI_MANAGED} == true ]]; then
     export STARTPAAC_CREATE_CONFIG=false
   fi
-  local requested_noninteractive=${CLI_NON_INTERACTIVE_OVERRIDE} requested_ci=${CLI_CI_OVERRIDE} requested_menu=${CLI_MENU_OVERRIDE} requested_e2e_config=${CLI_E2E_CONFIG_OVERRIDE} env_e2e_config=${PAC_E2E_CONFIG-}
+  local requested_noninteractive=${CLI_NON_INTERACTIVE_OVERRIDE} requested_ci=${CLI_CI_OVERRIDE} requested_menu=${CLI_MENU_OVERRIDE} requested_e2e_config=${CLI_E2E_CONFIG_OVERRIDE} env_e2e_config=${PAC_E2E_CONFIG-} requested_e2e_override=${CLI_E2E_CONFIG_OVERLAY_OVERRIDE} env_e2e_override=${PAC_E2E_CONFIG_OVERRIDE-}
   [[ -n ${requested_noninteractive} ]] || unset NON_INTERACTIVE
   [[ -n ${requested_ci} ]] || unset CI_MODE
   [[ -n ${requested_menu} ]] || unset FORCE_INTERACTIVE
@@ -627,12 +640,24 @@ cli_main() {
   elif [[ -n ${env_e2e_config} ]]; then
     PAC_E2E_CONFIG=${env_e2e_config}
   fi
+  if [[ -n ${requested_e2e_override} ]]; then
+    PAC_E2E_CONFIG_OVERRIDE=${requested_e2e_override}
+  elif [[ -n ${env_e2e_override} ]]; then
+    PAC_E2E_CONFIG_OVERRIDE=${env_e2e_override}
+  fi
   if [[ -n ${PAC_E2E_CONFIG:-} ]]; then
     if ! pac_e2e_config_is_pass "${PAC_E2E_CONFIG}"; then
       PAC_E2E_CONFIG=${PAC_E2E_CONFIG/#\~/${HOME}}
       [[ ${PAC_E2E_CONFIG} == /* ]] || PAC_E2E_CONFIG=${PWD}/${PAC_E2E_CONFIG}
     fi
     export PAC_E2E_CONFIG
+  fi
+  if [[ -n ${PAC_E2E_CONFIG_OVERRIDE:-} ]]; then
+    if ! pac_e2e_config_is_pass "${PAC_E2E_CONFIG_OVERRIDE}"; then
+      PAC_E2E_CONFIG_OVERRIDE=${PAC_E2E_CONFIG_OVERRIDE/#\~/${HOME}}
+      [[ ${PAC_E2E_CONFIG_OVERRIDE} == /* ]] || PAC_E2E_CONFIG_OVERRIDE=${PWD}/${PAC_E2E_CONFIG_OVERRIDE}
+    fi
+    export PAC_E2E_CONFIG_OVERRIDE
   fi
   if [[ ${CLI_ACTION} == --configure-pac-target && ${#CLI_EXTRA[@]} -ge 3 ]]; then
     local target_secrets=${CLI_EXTRA[2]}
@@ -646,7 +671,7 @@ cli_main() {
   fi
   cli_validate
   cli_require_jq
-  if [[ ${CLI_MANAGED} == true ]] && pac_e2e_config_is_pass "${PAC_E2E_CONFIG:-}"; then
+  if [[ ${CLI_MANAGED} == true ]] && { pac_e2e_config_is_pass "${PAC_E2E_CONFIG:-}" || pac_e2e_config_is_pass "${PAC_E2E_CONFIG_OVERRIDE:-}"; }; then
     export PASSWORD_STORE_GPG_OPTS="${PASSWORD_STORE_GPG_OPTS:-} --batch --no-tty --pinentry-mode error"
   fi
   initialize_runtime
