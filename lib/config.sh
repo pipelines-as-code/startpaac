@@ -44,6 +44,11 @@ elif [[ ${STARTPAAC_CREATE_CONFIG:-true} == true && -z ${PAC_DIR:-} ]]; then
 # Install custom objects in the kind cluster after the cluster is created
 # INSTALL_CUSTOM_OBJECT=~/path/to/dir/
 #
+# Namespaces where the optional Kueue component queues PipelineRuns one at a
+# time (space separated). Enable Kueue from the component menu (--menu) or
+# install it on an existing cluster with --install-kueue.
+# KUEUE_NAMESPACES="default"
+#
 # HOOKS_DIR is the directory where hook scripts are loaded from.
 # Hooks are executable files named pre-<component> or post-<component>
 # (e.g., post-install-tekton) that run automatically at defined points

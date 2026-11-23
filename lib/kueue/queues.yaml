@@ -1,0 +1,23 @@
+# Admit one PipelineRun at a time from namespaces labelled
+# startpaac.dev/kueue=enabled; tekton-kueue keeps the rest pending.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: startpaac-flavor
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: startpaac-pipelines
+spec:
+  namespaceSelector:
+    matchLabels:
+      startpaac.dev/kueue: enabled
+  queueingStrategy: StrictFIFO
+  resourceGroups:
+  - coveredResources: ["tekton.dev/pipelineruns"]
+    flavors:
+    - name: startpaac-flavor
+      resources:
+      - name: tekton.dev/pipelineruns
+        nominalQuota: 1

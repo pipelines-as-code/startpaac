@@ -29,6 +29,7 @@ help() {
     '  --install-dashboard          Install Tekton Dashboard' \
     '  -g, --install-forgejo        Install Forgejo and sample repositories' \
     '  --install-postgresql         Install PostgreSQL' \
+    '  --install-kueue              Install Kueue to queue PipelineRuns one at a time' \
     '  --setup-forgejo-sample       Create sample Forgejo repositories' \
     '  --all-to-tekton              Recreate Kind and install through Tekton' \
     '  -F, --all-but-forge          Install without Kind or Forgejo' \
@@ -203,7 +204,7 @@ cli_parse() {
       shift 3
       value=
       ;;
-    --help | --up | --describe | --doctor | --status | --all | --all-but-kind | --install-paac | --kind | --install-forgejo | --install-tekton | --sync-kubeconfig | --github-second-ctrl | --start-user-gosmee | --all-but-forge | --all-github-second-no-forgejo | --reset-preferences | --stop-kind | --redeploy-kind | --install-gateway | --install-registry | --install-triggers | --install-chains | --install-dashboard | --install-postgresql | --setup-forgejo-sample | --all-to-tekton | --configure-pac | --debug-image | --setup-github-app | --show-config) value= ;;
+    --help | --up | --describe | --doctor | --status | --all | --all-but-kind | --install-paac | --kind | --install-forgejo | --install-tekton | --sync-kubeconfig | --github-second-ctrl | --start-user-gosmee | --all-but-forge | --all-github-second-no-forgejo | --reset-preferences | --stop-kind | --redeploy-kind | --install-gateway | --install-registry | --install-triggers | --install-chains | --install-dashboard | --install-kueue | --install-postgresql | --setup-forgejo-sample | --all-to-tekton | --configure-pac | --debug-image | --setup-github-app | --show-config) value= ;;
     *) cli_usage_error "Unknown argument: ${arg}" ;;
     esac
     [[ -z ${CLI_ACTION} ]] || cli_usage_error 'Choose one action per invocation.'
@@ -525,7 +526,7 @@ cli_execute_core() {
     export HELM_KUBECONTEXT=kind-kind
     export INSTALL_PAC=true INSTALL_TEKTON_DASHBOARD=true INSTALL_FORGE=false
     export INSTALL_TEKTON_TRIGGERS=false INSTALL_TEKTON_CHAINS=false INSTALL_POSTGRESQL=false
-    export INSTALL_CUSTOM_OBJECT_ENABLED=false INSTALL_GITHUB_SECOND_CTRL=false
+    export INSTALL_CUSTOM_OBJECT_ENABLED=false INSTALL_GITHUB_SECOND_CTRL=false INSTALL_KUEUE=false
     all
     ;;
   --install-paac)

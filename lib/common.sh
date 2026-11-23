@@ -1023,6 +1023,7 @@ export_hook_environment() {
         INSTALL_CUSTOM_OBJECT_ENABLED
         INSTALL_FORGE
         INSTALL_GITHUB_SECOND_CTRL
+        INSTALL_KUEUE
         INSTALL_PAC
         INSTALL_POSTGRESQL
         INSTALL_TEKTON_CHAINS
@@ -1030,6 +1031,7 @@ export_hook_environment() {
         INSTALL_TEKTON_TRIGGERS
         KO_DEFAULTBASEIMAGE
         KUBECONFIG
+        KUEUE_NAMESPACES
         PAC
         PAC_CONTROLLER_TARGET_NS
         PAC_DEBUG_IMAGE
