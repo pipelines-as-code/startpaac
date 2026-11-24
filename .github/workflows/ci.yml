@@ -9,37 +9,45 @@ on:
 
 jobs:
   # A pull request that only touches prose does not need a Kind cluster, but a
-  # workflow-level paths filter would leave the required test-startpaac check
-  # pending forever. Report a decision instead and skip the heavy jobs.
+  # workflow-level paths filter would leave the required check pending forever.
+  # Report a decision instead and let the jobs skip themselves.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
+      no_kind: ${{ steps.diff.outputs.no_kind }}
     steps:
       - name: Checkout startpaac repository
         uses: actions/checkout@v4
 
-      - name: Check whether only documentation changed
+      - name: Check whether only documentation or workflow files changed
         id: diff
         run: |
           if [ "${{ github.event_name }}" != pull_request ]; then
             echo "docs_only=false" >>"$GITHUB_OUTPUT"
+            echo "no_kind=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi
           base="${{ github.event.pull_request.base.ref }}"
           git fetch --no-tags --depth=1 origin "${base}"
           docs_only=true
+          no_kind=true
           while read -r file; do
             [ -n "${file}" ] || continue
             case "${file}" in
               *.md|docs/*|LICENSE) ;;
-              *) docs_only=false ;;
+              .github/*) docs_only=false ;;
+              *)
+                docs_only=false
+                no_kind=false
+                ;;
             esac
           done < <(git diff --name-only FETCH_HEAD HEAD)
           echo "docs_only=${docs_only}" >>"$GITHUB_OUTPUT"
+          echo "no_kind=${no_kind}" >>"$GITHUB_OUTPUT"
 
-  unit-tests:
+  ci-fast:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
@@ -54,9 +62,16 @@ jobs:
       - name: Run Python CLI and helper tests
         run: python3 -m unittest discover -s tests -v
 
-  test-startpaac:
+      - name: Check the CLI still starts
+        run: |
+          ./startpaac --help >/dev/null
+          ./startpaac --describe --output json | jq -e '.ok' >/dev/null
+
+  # The Kind install and the full end-to-end run stay out of the required
+  # checks: they take minutes and a broken YAML conditional does not need them.
+  kind-e2e:
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.no_kind != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
