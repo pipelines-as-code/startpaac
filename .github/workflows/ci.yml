@@ -8,7 +8,40 @@ on:
   workflow_dispatch:
 
 jobs:
+  # A pull request that only touches prose does not need a Kind cluster, but a
+  # workflow-level paths filter would leave the required test-startpaac check
+  # pending forever. Report a decision instead and skip the heavy jobs.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+    steps:
+      - name: Checkout startpaac repository
+        uses: actions/checkout@v4
+
+      - name: Check whether only documentation changed
+        id: diff
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            echo "docs_only=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="${{ github.event.pull_request.base.ref }}"
+          git fetch --no-tags --depth=1 origin "${base}"
+          docs_only=true
+          while read -r file; do
+            [ -n "${file}" ] || continue
+            case "${file}" in
+              *.md|docs/*|LICENSE) ;;
+              *) docs_only=false ;;
+            esac
+          done < <(git diff --name-only FETCH_HEAD HEAD)
+          echo "docs_only=${docs_only}" >>"$GITHUB_OUTPUT"
+
   unit-tests:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -22,6 +55,8 @@ jobs:
         run: python3 -m unittest discover -s tests -v
 
   test-startpaac:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
