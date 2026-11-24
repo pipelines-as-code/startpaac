@@ -2,148 +2,122 @@
 
 ## Config file
 
-Located at `~/.config/startpaac/config` (override with `STARTPAC_CONFIG_FILE` env var).
+startpaac reads `~/.config/startpaac/config` (override with `STARTPAC_CONFIG_FILE`). It is sourced as shell. Environment variables take precedence over values in the file.
 
-### Gosmee delivery diagnostics
+| Variable | Description |
+|----------|-------------|
+| `PAC_DIR` | Pipelines-as-Code checkout. Auto-detected when you run startpaac from a PAC checkout |
+| `PAC_E2E_CONFIG` | E2E YAML with the GitHub App credentials. Defaults to `~/.local/share/startpaac/e2e-config.yaml` |
+| `TARGET_HOST` | `local` or the hostname of a remote VM |
+| `KO_EXTRA_FLAGS` | Extra ko flags, for example `(--platform linux/arm64 --insecure-registry)`. Forced to `(--insecure-registry)` when `TARGET_HOST=local` |
+| `GOSMEE_LOG_LEVEL` | gosmee log level. Default `debug` |
+| `GOSMEE_TARGET_TIMEOUT` | Seconds before a delivery to the target times out. Default `5` |
+| `GOSMEE_TARGET_RETRIES` | Delivery retries. Default `5` |
+| `HOOKS_DIR` | Hooks directory. Default `~/.config/startpaac/hooks` |
+| `CACHE_MAX_AGE_DAYS` | Age after which downloaded manifests are fetched again. Default `21` |
 
-When startpaac starts Gosmee, it enables structured debug logging and retries
-target delivery failures. Override these settings in the configuration file or
-environment when needed:
+Minimal file:
 
-```bash
-GOSMEE_LOG_LEVEL=debug
-GOSMEE_TARGET_TIMEOUT=5
-GOSMEE_TARGET_RETRIES=5
-```
-
-The timeout is in seconds. Gosmee writes JSON records containing delivery and
-stream identifiers, making failures searchable with `jq` in the pod logs or
-the `/tmp/save` replay directory.
-
-```bash
-# Path to your pipelines-as-code checkout (auto-detected if unset)
-PAC_DIR=~/go/src/github.com/tektoncd/pipelines-as-code
-
-# Path to your Pipelines-as-Code E2E YAML config file
-PAC_E2E_CONFIG=~/.local/share/startpaac/e2e-config.yaml
-
-# Where Kind runs: "local" or a remote hostname
+```shell
 TARGET_HOST=local
-
-# Extra flags for ko
-KO_EXTRA_FLAGS=() # e.g. --platform linux/arm64 --insecure-registry
-
-## Remote VM setup (not needed when TARGET_HOST=local)
-# Set up a wildcard DNS *.lan.mydomain.com pointing to your TARGET_HOST.
-# Tip: https://nextdns.io lets you create wildcard DNS for local networks.
-DOMAIN_NAME=lan.mydomain.com
-PAC=paac.${DOMAIN_NAME}
-REGISTRY=registry.${DOMAIN_NAME}
-FORGE_HOST=gitea.${DOMAIN_NAME}
-DASHBOARD=dashboard.${DOMAIN_NAME}
-TARGET_BIND_IP=192.168.1.5          # comma-separated for multiple IPs
+PAC_DIR=~/go/src/github.com/tektoncd/pipelines-as-code
+PAC_E2E_CONFIG=~/.local/share/startpaac/e2e-config.yaml
 ```
 
 ## Secrets management
 
-Secrets are stored in the same YAML configuration file used by Pipelines-as-Code
-E2E tests (`test/e2e-config.yaml.example`), configured via `PAC_E2E_CONFIG` (in
-the environment or `~/.config/startpaac/config`) or `--e2e-config FILE|pass:<entry>`:
+GitHub App credentials come from the YAML format used by the Pipelines-as-Code E2E tests (`test/e2e-config.yaml.example` in the PAC repository). Point to it with `PAC_E2E_CONFIG` (environment or config file) or `--e2e-config`. The value is a file path or a `pass:<entry>` reference, which avoids a plaintext file on disk:
 
 ```shell
-PAC_E2E_CONFIG=./test/e2e-config.yaml ./startpaac --ci -a
-# or directly from password-store (avoids a persistent plaintext file on disk)
 PAC_E2E_CONFIG=pass:pac/e2e-config ./startpaac --up
-# or via CLI flag
 ./startpaac --e2e-config pass:pac/e2e-config --up
 ```
 
-Requires `yq` (or `python3` with `PyYAML`). startpaac reads:
+Reading the YAML needs `yq` or `python3` with PyYAML. startpaac reads:
 
-- Primary controller secrets: `github.application_id`, `github.private_key`,
-  `common.webhook_secret`, and `github.smee_url`.
-- Second controller (GHE) secrets: `github_enterprise.application_id`,
-  `github_enterprise.private_key`, `github_enterprise.webhook_secret`,
-  `github_enterprise.smee_url`, and `github_enterprise.api_url` (normalized to
-  a bare hostname for `PAC_GITHUB_SECOND_HOSTNAME` when unset).
-- Forgejo sample webhook secret: `common.webhook_secret` for
-  `PAC_WEBHOOK_SECRET` when unset.
+- Primary controller: `github.application_id`, `github.private_key`, `common.webhook_secret`, `github.smee_url`.
+- Second controller: `github_enterprise.application_id`, `.private_key`, `.webhook_secret`, `.smee_url`, and `.api_url`. The API URL is reduced to a bare hostname for `PAC_GITHUB_SECOND_HOSTNAME` when that is unset.
+- Forgejo sample webhook: `common.webhook_secret`, used for `PAC_WEBHOOK_SECRET` when unset.
 
-In `--ci` mode (for legacy install actions like `-a`, not `--up`), the second
-controller is automatically enabled when `github_enterprise` credentials are
-present in `PAC_E2E_CONFIG` and `INSTALL_GITHUB_SECOND_CTRL` is unset. Explicit
-environment variables take precedence over YAML values.
+Explicit environment variables win over YAML values. In `--ci` mode (legacy actions such as `-a`, not `--up`), the second controller is enabled automatically when `github_enterprise` credentials are present and `INSTALL_GITHUB_SECOND_CTRL` is unset.
 
-#### Partial overrides (`PAC_E2E_CONFIG_OVERRIDE`)
-
-To swap a subset of fields (for example, testing with a different GitHub App
-while keeping the rest of your `PAC_E2E_CONFIG`), pass an overlay YAML file or
-`pass:<entry>` via `PAC_E2E_CONFIG_OVERRIDE` or `--e2e-config-override`:
+To replace only some fields, for example to test another GitHub App, overlay a second YAML file (a path or `pass:<entry>`) with `PAC_E2E_CONFIG_OVERRIDE` or `--e2e-config-override`:
 
 ```shell
 ./startpaac --e2e-config-override pass:pac/my-other-app -p
 ```
 
-Any non-empty scalar field in the overlay takes precedence over `PAC_E2E_CONFIG`;
-omitted or empty fields fall back to the base config. Precedence is
-`--e2e-config-override` > `PAC_E2E_CONFIG_OVERRIDE` env > config file.
+Non-empty scalar fields in the overlay win; omitted or empty fields fall back to the base config. Precedence: `--e2e-config-override`, then `PAC_E2E_CONFIG_OVERRIDE`, then the base config.
 
-### Automatic GitHub App creation
+## Automatic GitHub App creation
 
-If no usable credentials are found (files missing or empty), interactive runs
-offer to create the GitHub App for you, or run it explicitly:
+When an interactive run finds no usable credentials (file missing or empty), it offers to create the GitHub App. Run the flow directly with:
 
 ```shell
 ./startpaac --setup-github-app
 ```
 
-Declining the offer sets `PAC_SKIP_GITHUB_APP_PROMPT=true` in your config so
-future runs don't ask again; remove it (or run `--setup-github-app`) to set up
-later.
+Declining the offer writes `PAC_SKIP_GITHUB_APP_PROMPT=true` to your config so later runs do not ask. Remove it, or run `--setup-github-app`, to set up later.
 
-The guided flow:
+The flow:
 
-1. Asks whether to create the app under your personal account or an organization.
-2. Generates a webhook relay URL from <https://hook.pipelinesascode.com>
-   (development relay only — no support or security guarantees).
-3. Opens your browser on GitHub's [App Manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest);
-   a small local Python server receives the redirect and exchanges the
-   temporary code for the app credentials.
-4. Stores the credentials in `PAC_E2E_CONFIG` (defaulting to
-   `~/.local/share/startpaac/e2e-config.yaml`, persisted in your config).
-5. Shows the app installation URL — install the app on the repositories you
-   want to use with PAC.
-6. Offers to run gosmee as a persistent user service to forward webhooks.
+1. Asks whether the App belongs to your account or an organization.
+2. Gets a webhook relay URL from <https://hook.pipelinesascode.com> (development only, no support or security guarantees).
+3. Opens your browser on GitHub's [App Manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest). A local Python server (`lib/github_app_create.py`) receives the redirect and exchanges the temporary code for credentials.
+4. Writes the credentials to `PAC_E2E_CONFIG` with mode `0600`, and saves that path in your config.
+5. Prints the installation URL. Install the App on the repositories you want to use.
+6. Offers to run gosmee as a persistent user service.
 
-### Gosmee webhook forwarding service
+## Webhook forwarding
 
-GitHub cannot reach a local Kind cluster directly, so a
-[gosmee](https://github.com/chmouel/gosmee) client forwards the relay URL to
-your PAC controller. startpaac offers to manage it as:
+GitHub cannot reach a local Kind cluster, so a [gosmee](https://github.com/chmouel/gosmee) client forwards the relay URL to the PAC controller. startpaac offers to manage it as:
 
-- **Linux**: a systemd user unit `~/.config/systemd/user/startpaac-gosmee.service`
-- **macOS**: a LaunchAgent `~/Library/LaunchAgents/com.startpaac.gosmee.plist`
-  (logs in `~/Library/Logs/startpaac-gosmee.log`; requires a logged-in GUI session)
+- Linux: the systemd user unit `~/.config/systemd/user/startpaac-gosmee.service`.
+- macOS: the LaunchAgent `~/Library/LaunchAgents/com.startpaac.gosmee.plist`, logging to `~/Library/Logs/startpaac-gosmee.log`. It needs a logged-in GUI session.
 
-Only files containing the `Managed by startpaac` marker are ever updated;
-a pre-existing unit or plist of your own is left alone (a legacy
-`gosmee.service` systemd unit is simply restarted). If you decline or the
-platform is unsupported, the exact `gosmee client` command to run manually is
-printed instead.
+startpaac only updates files containing the `Managed by startpaac` marker. A unit or plist of your own is left alone, and a legacy `gosmee.service` unit is only restarted. If you decline, or the platform is unsupported, startpaac prints the `gosmee client` command to run by hand. `--start-user-gosmee` starts the forwarder on its own.
 
-### Second GitHub controller
+gosmee runs with JSON output, debug logging, and retries on delivery failures, controlled by `GOSMEE_LOG_LEVEL`, `GOSMEE_TARGET_TIMEOUT`, and `GOSMEE_TARGET_RETRIES`. Records carry delivery and stream identifiers, so failures can be searched with `jq`. gosmee saves payloads for replay in `/tmp/replay` (user service) or `/tmp/save` (in-cluster pod).
 
-Provide `github_enterprise` credentials in `PAC_E2E_CONFIG` (`--e2e-config`)
-and use `--github-second-ctrl`.
-For GitHub Enterprise, `PAC_GITHUB_SECOND_HOSTNAME` is automatically derived
-from `github_enterprise.api_url` (or can be set explicitly to a bare hostname
-such as `ghe.example.com`). startpaac adds this hostname to the second
-controller's trusted provider list so repository webhooks can authenticate
-before a GitHub App request has been received.
+## Remote VM setup
+
+Skip this when `TARGET_HOST=local`. For a remote host, point a wildcard DNS record such as `*.lan.mydomain.com` at it ([nextdns.io](https://nextdns.io) can do this for local networks) and set:
+
+```shell
+TARGET_HOST=vm.lan
+DOMAIN_NAME=lan.mydomain.com
+PAC=paac.${DOMAIN_NAME}
+REGISTRY=registry.${DOMAIN_NAME}
+FORGE_HOST=gitea.${DOMAIN_NAME}
+DASHBOARD=dashboard.${DOMAIN_NAME}
+TARGET_BIND_IP=192.168.1.5   # comma-separated for multiple IPs
+```
+
+startpaac needs SSH access to the host. `-s, --sync-kubeconfig` fetches its kubeconfig.
+
+## Second GitHub controller
+
+Add `github_enterprise` credentials to the E2E YAML and use `--github-second-ctrl`. `PAC_GITHUB_SECOND_HOSTNAME` is derived from `github_enterprise.api_url`, or set it to a bare hostname such as `ghe.example.com`. startpaac adds the hostname to the controller's trusted provider list so repository webhooks authenticate before a GitHub App request has arrived.
+
+## Kueue
+
+Kueue is off by default. Select it in the component menu (shown on the first run and with `--menu`), or install it on a cluster that already has Tekton Pipelines:
+
+```shell
+./startpaac --install-kueue
+```
+
+This installs cert-manager v1.19.2, Kueue v0.16.6, and [tekton-kueue](https://github.com/tektoncd/tekton-kueue) v0.4.3, then creates a `startpaac-pipelines` ClusterQueue that admits one PipelineRun at a time. New PipelineRuns start as `PipelineRunPending` and run in order.
+
+Only namespaces in `KUEUE_NAMESPACES` (space separated, default `default`) are queued. startpaac labels them `startpaac.dev/kueue=enabled` and creates a `pipelines-queue` LocalQueue in each. Other namespaces, including those PAC E2E tests create, are left alone. After editing the list, run `--install-kueue` again. Dropped namespaces run their PipelineRuns immediately.
+
+```shell
+KUEUE_NAMESPACES="default sample"
+```
 
 ## PostgreSQL
 
-Customize the connection in `lib/postgresql/values.yaml`:
+Edit the connection settings in `lib/postgresql/values.yaml`:
 
 ```yaml
 global:
@@ -154,101 +128,41 @@ global:
       database: "mydatabase"
 ```
 
-Default credentials are weak and for local dev only.
-
-## Kueue
-
-Kueue is off by default. Select it in the component menu (shown on the first
-run and with `--menu`), or install it on an existing cluster that already has
-Tekton Pipelines:
-
-```shell
-./startpaac --install-kueue
-```
-
-This installs cert-manager v1.19.2, Kueue v0.16.6 and
-[tekton-kueue](https://github.com/tektoncd/tekton-kueue) v0.4.3, then creates a
-`startpaac-pipelines` ClusterQueue that admits one PipelineRun at a time. New
-PipelineRuns start as `PipelineRunPending` and run in order as the queue frees
-up.
-
-Only namespaces listed in `KUEUE_NAMESPACES` (space separated, default
-`default`) are queued. startpaac labels them `startpaac.dev/kueue=enabled` and
-creates a `pipelines-queue` LocalQueue in each; other namespaces, including
-the ones PAC E2E tests create, are left alone.
-
-```shell
-KUEUE_NAMESPACES="default sample"
-```
-
-To change which namespaces are queued, edit `KUEUE_NAMESPACES` and run
-`./startpaac --install-kueue` again. Namespaces you dropped from the list go
-back to running their PipelineRuns right away.
+The default credentials are weak and meant for local development.
 
 ## Preferences
 
-Component selections are saved to `~/.config/startpaac/preferences.json` when you choose to save them. On subsequent runs, saved preferences are used automatically.
+Component selections are saved to `~/.config/startpaac/preferences.json` when you choose to save them, and reused on later runs. `--menu` forces the menu; `--reset-preferences` clears the file.
 
-```shell
-./startpaac --menu              # force the menu even with saved preferences
-./startpaac --reset-preferences # clear saved preferences
-```
+## Existing cluster
 
-## Configure PAC on an existing cluster
-
-If you have PAC already installed (e.g. via the OpenShift operator):
+To configure PAC on a cluster where it is already installed (for example through the OpenShift operator):
 
 ```shell
 ./startpaac --configure-pac-target $KUBECONFIG $TARGET_NAMESPACE $E2E_CONFIG_YAML
 ```
 
-- `$KUBECONFIG` -- kubeconfig for the cluster
-- `$TARGET_NAMESPACE` -- namespace where PAC is installed (e.g. `openshift-pipelines`)
-- `$E2E_CONFIG_YAML` -- path to a Pipelines-as-Code E2E YAML config file
+The arguments are the cluster kubeconfig, the namespace where PAC runs (such as `openshift-pipelines`), and the path to a PAC E2E YAML config.
 
 ## Hooks
 
-Hooks are executable scripts that run at defined points in the installation flow.
+Hooks are executables that run before or after a step. Put them in `~/.config/startpaac/hooks/` (or `HOOKS_DIR`) and name them `pre-<point>` or `post-<point>`, for example `pre-install-tekton` or `post-configure-pac`.
 
-### Setup
+Hook points: `all`, `stop-kind`, `sync-kubeconfig`, `install-gateway`, `install-registry`, `install-tekton`, `install-triggers`, `install-chains`, `install-dashboard`, `install-kueue`, `install-pac`, `configure-pac`, `configure-pac-custom-certs`, `patch-pac-service-nodeport`, `install-forgejo`, `setup-forgejo-sample`, `install-postgresql`, `install-custom-objects`, `install-github-second-ctrl`.
 
-Place hooks in `~/.config/startpaac/hooks/` (override with `HOOKS_DIR` env var).
+Hooks run in the full install flows and in the matching direct commands such as `--install-tekton`, `--install-paac`, `--install-forgejo`, and `--configure-pac`. A hook is one executable file or a directory of executables run in sorted order:
 
-### Naming
-
-Files are named `pre-<component>` or `post-<component>`:
-
-```
-pre-install-tekton    -- runs before Tekton install
-post-configure-pac    -- runs after PAC configuration
+```text
+~/.config/startpaac/hooks/post-install-tekton            # single file
+~/.config/startpaac/hooks/post-install-tekton/01-extras  # directory
 ```
 
-Available hook points: `all`, `stop-kind`, `sync-kubeconfig`, `install-gateway`, `install-registry`, `install-tekton`, `install-triggers`, `install-chains`, `install-dashboard`, `install-kueue`, `install-pac`, `configure-pac`, `configure-pac-custom-certs`, `patch-pac-service-nodeport`, `install-forgejo`, `setup-forgejo-sample`, `install-postgresql`, `install-custom-objects`, `install-github-second-ctrl`.
-
-Hooks run in the full install flows and in matching direct component commands such as `--install-tekton`, `--install-paac`, `--install-forgejo`, and `--configure-pac`.
-
-### Format
-
-A hook can be a single executable file or a directory of executables (run in sorted order):
-
-```
-~/.config/startpaac/hooks/post-install-tekton           # single file
-~/.config/startpaac/hooks/post-install-tekton/01-extras  # directory of scripts
-```
-
-### Environment
-
-Hooks inherit the current environment. startpaac also exports its scalar runtime/config values for hooks (`KUBECONFIG`, `TARGET_HOST`, `PAC_DIR`, etc.). `STARTPAC_HOOK_NAME` is exported with the current hook name; `STARTPAAC_HOOK_NAME` is also available as an alias.
-
-A non-zero exit from any hook aborts the run.
-
-### Example
+Hooks inherit the environment. startpaac also exports its scalar config values (`KUBECONFIG`, `TARGET_HOST`, `PAC_DIR`, and others) and sets `STARTPAC_HOOK_NAME` to the current hook (`STARTPAAC_HOOK_NAME` is an alias). A non-zero exit aborts the run.
 
 ```bash
 mkdir -p ~/.config/startpaac/hooks
 cat > ~/.config/startpaac/hooks/post-install-tekton <<'EOF'
 #!/bin/bash
-echo "Tekton installed -- applying custom resources"
 kubectl apply -f ~/my-extra-resources/
 EOF
 chmod +x ~/.config/startpaac/hooks/post-install-tekton

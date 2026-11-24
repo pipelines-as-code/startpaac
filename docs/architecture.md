@@ -1,433 +1,151 @@
-# StartPAC Architecture
+# Architecture
 
-This document describes the architecture and design of StartPAC, an automated setup tool for Pipelines as Code development environments.
+startpaac is a modular Bash tool that builds a Pipelines-as-Code development environment on Kind (Kubernetes in Docker). It is for local development only: default passwords are weak, ingress uses a self-signed certificate, and the registry is insecure.
 
-## Overview
-
-StartPAC is a modular Bash-based orchestration tool that automates the creation of a complete Pipelines as Code development environment on Kubernetes using Kind (Kubernetes in Docker).
-
-## High-Level Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         StartPAC CLI                           │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  Interactive Menu (gum) │ Preferences (JSON) │ Config     │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└────────────┬────────────────────────────────────────────────────┘
-             │
-             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Component Installers                        │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
-│  │  Kind    │ │  Envoy   │ │ Registry │ │  Tekton  │          │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘          │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
-│  │   PAC    │ │ Forgejo  │ │PostgreSQL│ │Dashboard │          │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘          │
-└────────────┬────────────────────────────────────────────────────┘
-             │
-             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Kubernetes (Kind Cluster)                    │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Namespaces:                                             │   │
-│  │  • tekton-pipelines (Tekton core + Dashboard)           │   │
-│  │  • pipelines-as-code (PAC controllers)                  │   │
-│  │  • envoy-gateway-system (Gateway API impl.)              │   │
-│  │  • default (Forgejo, PostgreSQL)                        │   │
-│  │  • gosmee (Webhook proxy)                               │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└────────────┬────────────────────────────────────────────────────┘
-             │
-             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Docker / Container Runtime                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Component Architecture
-
-### Core Components (Always Installed)
-
-#### 1. Kind Cluster
-- **Purpose**: Provides local Kubernetes cluster
-- **Configuration**: `lib/kind/kind.yaml`
-- **Features**:
-  - Insecure registry support
-  - Port forwarding for Envoy Gateway NodePorts (80->31080, 443->31443)
-  - Custom containerd registry configuration
-
-#### 2. Envoy Gateway
-- **Purpose**: HTTP(S) routing to services via the Kubernetes Gateway API
-- **Namespace**: `envoy-gateway-system`
-- **Features**:
-  - TLS termination with a wildcard self-signed certificate (minica)
-  - Single shared `Gateway`; per-component `HTTPRoute` resources use its HTTPS listener
-  - Routes traffic to PAC, Forgejo, Dashboard, Registry
-
-#### 3. Docker Registry
-- **Purpose**: Store locally built container images
-- **Location**: `lib/registry/install.sh`
-- **Access**: `https://registry.127.0.0.1.nip.io` (local mode)
-- **Features**:
-  - Insecure registry mode for development
-  - Used by `ko` to push PAC images
-
-#### 4. Tekton Pipelines
-- **Purpose**: Core CI/CD pipeline engine
-- **Namespace**: `tekton-pipelines`
-- **Version**: Latest release from upstream
-- **Features**:
-  - Step actions enabled
-  - Webhook-based admission control
-
-### Optional Components
-
-#### 5. Pipelines as Code (PAC)
-- **Purpose**: GitOps-style pipeline definitions
-- **Namespace**: `pipelines-as-code`
-- **Build Method**: `ko` from local source
-- **Components**:
-  - Controller: Main reconciliation loop
-  - Watcher: Monitors PipelineRun status
-  - Webhook: Receives GitHub/GitLab events
-- **Configuration**:
-  - GitHub App credentials (via secrets)
-  - Webhook proxy (gosmee)
-  - Ingress with TLS
-
-#### 6. Tekton Dashboard
-- **Purpose**: Web UI for Tekton
-- **Namespace**: `tekton-pipelines`
-- **Access**: `https://dashboard.127.0.0.1.nip.io`
-
-#### 7. Tekton Triggers
-- **Purpose**: Event-driven pipeline execution
-- **Namespace**: `tekton-pipelines`
-
-#### 8. Tekton Chains
-- **Purpose**: Supply chain security (signing, attestation)
-- **Namespace**: `tekton-chains`
-
-#### 9. Forgejo
-- **Purpose**: Self-hosted Git forge for local testing
-- **Namespace**: `default`
-- **Deployment**: Helm chart
-- **Access**: `https://gitea.127.0.0.1.nip.io`
-- **Features**:
-  - Lightweight Git server
-  - Webhook support
-  - SQLite backend (no persistence)
-
-#### 10. PostgreSQL
-- **Purpose**: Database backend for PAC
-- **Namespace**: `default`
-- **Deployment**: Bitnami Helm chart
-- **Features**:
-  - No persistence (development mode)
-  - Custom credentials via values.yaml
-
-#### 11. GitHub Second Controller
-- **Purpose**: Support multiple GitHub instances (e.g., GitHub Enterprise)
-- **Namespace**: `pipelines-as-code`
-- **Features**:
-  - Separate secret management
-  - Dedicated ingress endpoint
-  - Independent gosmee proxy
-
-## Directory Structure
-
-```
-startpaac/
-├── startpaac              # Main entry point
-├── lib/
-│   ├── common.sh          # Shared utilities
-│   ├── config.sh          # Configuration loading
-│   ├── kind/
-│   │   └── kind.yaml      # Kind cluster config
-│   ├── registry/
-│   │   └── install.sh     # Registry installer
-│   ├── forgejo/
-│   │   ├── install.sh     # Forgejo installer
-│   │   └── values.yaml    # Helm values
-│   ├── postgresql/
-│   │   ├── install.sh     # PostgreSQL installer
-│   │   └── values.yaml    # Helm values
-│   └── helm/
-│       └── install.sh     # Helm installer
-├── misc/
-│   └── _startpaac         # ZSH completion
-└── docs/
-    └── architecture.md    # This file
-```
-
-## Data Flow
-
-### Installation Flow
-
-```
-1. User runs: ./startpaac
-   │
-   ├─→ Load configuration from ~/.config/startpaac/config
-   ├─→ Check prerequisites (docker, kubectl, helm, ko, etc.)
-   ├─→ Load or prompt for component preferences
-   │
-2. Component Selection
-   │
-   ├─→ Show interactive menu (if first run or --menu flag)
-   ├─→ Save preferences to ~/.config/startpaac/preferences.json
-   │
-3. Infrastructure Setup
-   │
-   ├─→ Create Kind cluster
-   ├─→ Install Envoy Gateway
-   ├─→ Install Docker Registry
-   ├─→ Install Tekton Pipelines
-   │
-4. Optional Components (based on preferences)
-   │
-   ├─→ Install Tekton Dashboard, Triggers, Chains
-   ├─→ Build and deploy PAC using ko
-   ├─→ Configure PAC (secrets, HTTPRoute, configmaps)
-   ├─→ Install Forgejo, PostgreSQL
-   ├─→ Install GitHub Second Controller
-   │
-5. Finalization
-   │
-   ├─→ Start gosmee webhook proxy
-   ├─→ Set kubectl context to pipelines-as-code namespace
-   └─→ Display configuration summary
-```
-
-### PAC Webhook Flow (Runtime)
-
-```
-GitHub/GitLab Event
-   │
-   ▼
-Webhook URL (GitHub App)
-   │
-   ▼
-Gosmee Proxy (local or in-cluster)
-   │
-   ▼
-Envoy Gateway (https://paac.127.0.0.1.nip.io)
-   │
-   ▼
-PAC Webhook Service (port 8080)
-   │
-   ▼
-PAC Controller (reconciliation)
-   │
-   ├─→ Create PipelineRun
-   ├─→ Fetch .tekton/ files from repo
-   └─→ Execute pipeline
+```text
+startpaac CLI (menu via gum, preferences JSON, config)
         │
         ▼
-   Tekton Pipelines Engine
+Component installers: Kind, Envoy Gateway, registry, Tekton, PAC,
+                      Forgejo, PostgreSQL, Dashboard, ...
         │
         ▼
-   Results reported back to GitHub/GitLab
+Kind cluster
+  tekton-pipelines      Tekton core and Dashboard
+  pipelines-as-code     PAC controllers
+  envoy-gateway-system  Gateway API implementation
+  default               Forgejo, PostgreSQL
+  gosmee                webhook proxy
+        │
+        ▼
+Docker
 ```
 
-## Deployment Modes
+## Core components
 
-### Local Mode (TARGET_HOST=local)
-- Kind cluster runs on localhost
-- Uses 127.0.0.1.nip.io for DNS
-- Insecure registry mode
-- Gosmee runs as local systemd user service
+Always installed.
 
-### Remote Mode (TARGET_HOST=vm.example.com)
-- Kind cluster runs on remote VM
-- Requires SSH access to remote host
-- Uses custom DNS or nip.io
-- Kubeconfig synced from remote host
-- Gosmee can run locally or in-cluster
+### Kind cluster
 
-## Secret Management
+Defined in `lib/kind/kind.yaml`, with an insecure registry, a custom containerd registry configuration, and host port mappings for the Envoy Gateway NodePorts (see [Ports and routes](#ports-and-routes)).
 
-Credentials are read from a Pipelines-as-Code E2E YAML config file
-(`PAC_E2E_CONFIG` or `--e2e-config FILE`, defaulting to
-`~/.local/share/startpaac/e2e-config.yaml`).
+### Envoy Gateway
 
-When no usable credentials exist, interactive runs (and `--setup-github-app`)
-can create the GitHub App automatically via GitHub's App Manifest flow: a local
-Python callback server (`lib/github_app_create.py`) receives the redirect,
-exchanges the temporary code for credentials, and startpaac writes them to
-`PAC_E2E_CONFIG` (`0600`). Webhook delivery is forwarded from a
-hook.pipelinesascode.com relay by a gosmee user service (systemd user unit on
-Linux, LaunchAgent on macOS).
+Runs in `envoy-gateway-system` and routes HTTP(S) to PAC, Forgejo, the Dashboard, and the registry through the Kubernetes Gateway API. One shared `Gateway` terminates TLS with a wildcard self-signed certificate generated by minica. Each component adds an `HTTPRoute` on its HTTPS listener.
 
-### Required YAML Fields
-```yaml
-common:
-  webhook_secret: ""   # Webhook shared secret
-github:
-  application_id: ""   # GitHub App ID
-  private_key: |       # GitHub App private key (PEM)
-    ...
-  smee_url: ""         # Webhook proxy URL
+### Docker registry
+
+Installed by `lib/registry/install.sh`. Served at `https://registry.127.0.0.1.nip.io` in local mode, in insecure mode. `ko` pushes PAC images to it.
+
+### Tekton Pipelines
+
+Latest upstream release, in `tekton-pipelines`, with step actions enabled.
+
+## Optional components
+
+- **Pipelines as Code** (`pipelines-as-code`): built from `PAC_DIR` with `ko`. Deploys the controller, watcher, and webhook, with GitHub App credentials as secrets, a gosmee webhook proxy, and TLS ingress.
+- **Tekton Dashboard** (`tekton-pipelines`): `https://dashboard.127.0.0.1.nip.io`.
+- **Tekton Triggers** (`tekton-pipelines`) and **Tekton Chains** (`tekton-chains`).
+- **Forgejo** (`default`): Helm chart with SQLite and no persistence, at `https://gitea.127.0.0.1.nip.io`.
+- **PostgreSQL** (`default`): Bitnami Helm chart, no persistence, credentials in `lib/postgresql/values.yaml`.
+- **Kueue**: cert-manager, Kueue, and tekton-kueue, with a ClusterQueue that runs one PipelineRun at a time. Off by default.
+- **GitHub second controller** (`pipelines-as-code`): a second PAC controller for another GitHub instance such as GitHub Enterprise, with its own secret, ingress endpoint, and gosmee proxy.
+
+## Install flow
+
+`./startpaac` runs these stages:
+
+1. Load `~/.config/startpaac/config`, check prerequisites, and load component preferences.
+2. Show the menu on the first run or with `--menu`, and save the selection to `~/.config/startpaac/preferences.json`.
+3. Create the Kind cluster, then install Envoy Gateway, the registry, and Tekton Pipelines.
+4. Install the selected optional components: Dashboard, Triggers, Chains, PAC (build with ko, then configure secrets, HTTPRoute, and ConfigMaps), Forgejo, PostgreSQL, the second controller.
+5. Start the gosmee webhook proxy, set the kubectl context to the `pipelines-as-code` namespace, and print a configuration summary.
+
+## PAC webhook flow
+
+```text
+GitHub event
+  → GitHub App webhook URL (relay)
+  → gosmee (local user service or in-cluster)
+  → Envoy Gateway (https://paac.127.0.0.1.nip.io)
+  → PAC controller service (port 8080)
+  → PipelineRun created, .tekton/ files fetched from the repository
+  → Tekton runs the pipeline
+  → results reported back to the Git provider
 ```
 
-## Configuration System
+## Local and remote mode
 
-### Configuration Hierarchy
+With `TARGET_HOST=local`, Kind runs on localhost, hostnames use `127.0.0.1.nip.io`, the registry is insecure, and gosmee runs as a local user service.
 
-1. **System Defaults** (in code)
-2. **User Config** (`~/.config/startpaac/config`)
-3. **Environment Variables** (override config file)
-4. **Component Preferences** (`~/.config/startpaac/preferences.json`)
+With `TARGET_HOST` set to a hostname, Kind runs on that host over SSH, with custom DNS or nip.io. startpaac syncs the kubeconfig from the host, and gosmee can run locally or in the cluster. See [remote VM setup](configuration.md#remote-vm-setup).
 
-### Key Configuration Variables
+## Directory structure and state
 
-- `TARGET_HOST`: Where to run Kind (local or remote VM)
-- `DOMAIN_NAME`: Base domain for ingress
-- `PAC_DIR`: Path to Pipelines as Code source
-- `PAC_E2E_CONFIG`: Path to Pipelines-as-Code E2E YAML config
-- `INSTALL_*`: Boolean flags for optional components
-
-## Network Architecture
-
-### Ingress Routes
-
-```
-https://paac.127.0.0.1.nip.io
-   └─→ pipelines-as-code/pipelines-as-code-controller:8080
-
-https://dashboard.127.0.0.1.nip.io
-   └─→ tekton-pipelines/tekton-dashboard:9097
-
-https://gitea.127.0.0.1.nip.io
-   └─→ default/forgejo-http:3000
-
-https://registry.127.0.0.1.nip.io
-   └─→ default/registry:5000
+```text
+startpaac            entry point
+lib/
+  common.sh          shared functions
+  cli.sh             CLI parsing and agent interfaces
+  config.sh          config template and loading
+  github_app_create.py  GitHub App manifest flow
+  kind/kind.yaml     Kind cluster config
+  gateway/           Envoy Gateway manifests
+  registry/          registry installer
+  forgejo/           installer and Helm values
+  postgresql/        installer and Helm values
+  kueue/             Kueue config and queues
+  helm/              Helm installer
+misc/_startpaac      zsh completion
+skills/              bundled agent skill
+docs/
 ```
 
-### Port Forwarding (Kind)
+State lives outside the cluster, so the cluster can be recreated at any time:
 
-```
-Host              Kind Node
-────────────────────────────
-80:32080    →    80:32080
-443:32443   →    443:32443
-```
+- `~/.cache/startpaac/`: downloaded manifests, fetched again after `CACHE_MAX_AGE_DAYS` (21 by default).
+- `/tmp/certs/`: minica certificates.
+- `~/.kube/config.<first label of DOMAIN_NAME>`: kubeconfig per environment (`config.local` in local mode).
+- `~/.config/startpaac/preferences.json`: component preferences.
 
-## Build Process
+## Ports and routes
 
-### PAC Build with Ko
+Kind maps host ports to the node through `extraPortMappings`, bound to `TARGET_BIND_IP`:
 
-```
-1. Read PAC source from PAC_DIR
-2. Ko resolve YAML manifests
-   │
-   ├─→ Build Go binaries
-   ├─→ Create container images
-   ├─→ Push to registry.127.0.0.1.nip.io
-   └─→ Update YAML with image references
-3. Apply YAML to cluster
-```
+| Host port | Node port |
+|-----------|-----------|
+| 80 | 31080 |
+| 443 | 31443 |
+| 3000 | 32567 |
 
-## State Management
+Routes in local mode:
 
-### Cache Locations
+| URL | Backend |
+|-----|---------|
+| `https://paac.127.0.0.1.nip.io` | `pipelines-as-code/pipelines-as-code-controller:8080` |
+| `https://dashboard.127.0.0.1.nip.io` | `tekton-pipelines/tekton-dashboard:9097` |
+| `https://gitea.127.0.0.1.nip.io` | `default/forgejo-http:3000` |
+| `https://registry.127.0.0.1.nip.io` | `registry/docker-registry:5000` |
 
-- **YAML Cache**: `~/.cache/startpaac/` (downloaded manifests, downloaded again after `CACHE_MAX_AGE_DAYS`, 21 days by default)
-- **TLS Certificates**: `/tmp/certs/` (minica-generated)
-- **Kubeconfig**: `~/.kube/config.<domain>` (per-environment)
-- **Preferences**: `~/.config/startpaac/preferences.json` (JSON)
+## PAC build with ko
 
-### Stateless Design
+startpaac runs `ko resolve` on the PAC manifests in `PAC_DIR`. ko builds the Go binaries and images, pushes them to `registry.127.0.0.1.nip.io`, and writes the image references into the YAML, which startpaac applies to the cluster.
 
-- No persistent state in cluster (development mode)
-- Cluster can be recreated at any time
-- Preferences survive cluster recreation
-- Secrets managed externally
+## Extension points
 
-## Extension Points
+Hooks run scripts before or after each step; see [Hooks](configuration.md#hooks).
 
-### Adding New Components
+To inject your own Kubernetes objects, set:
 
-1. Create installer script: `lib/newcomponent/install.sh`
-2. Add menu entry in `build_component_menu()`
-3. Add flag in `parse_menu_selections()`
-4. Add installation call in `all()` function
-5. Add preferences handling in `load_preferences()` / `save_preferences()`
-
-### Custom Objects
-
-Users can inject custom Kubernetes objects via:
-```bash
+```shell
 INSTALL_CUSTOM_OBJECT=~/path/to/yamls/
 INSTALL_CUSTOM_OBJECT_ENABLED=true
 ```
 
-## Design Principles
+To add a component:
 
-1. **Modular**: Each component is independent and can be installed separately
-2. **Idempotent**: Can be run multiple times safely
-3. **Fast Iteration**: Quick rebuild and redeploy of PAC changes
-4. **Developer-Focused**: Optimized for rapid development, not production
-5. **Self-Contained**: Minimal external dependencies
-6. **Interactive**: User-friendly menus and clear feedback
-7. **Reproducible**: Preferences ensure consistent environments
-
-## Performance Considerations
-
-### Resource Usage
-
-- **Minimum**: 4 cores, 8GB RAM, 20GB disk
-- **Recommended**: 8 cores, 16GB RAM, 50GB disk
-- **Peak Usage**: During initial install (image pulls)
-- **Steady State**: ~2-4GB RAM, minimal CPU
-
-### Optimization Strategies
-
-1. **YAML Caching**: Downloaded manifests cached locally
-2. **Insecure Registry**: Faster image pushes (no TLS overhead)
-3. **Local Registry**: No external network for image pulls
-4. **Component Scaling**: Can scale down unused components
-5. **No Persistence**: SQLite/in-memory for dev (faster, less disk)
-
-## Security Model
-
-### Threat Model
-
-- **Scope**: Local development only
-- **Assumptions**: Single developer, trusted local machine
-- **Not Designed For**: Production, multi-user, internet exposure
-
-### Security Features
-
-- TLS for all ingress (self-signed)
-- Namespace isolation
-- Secret injection via kubectl
-- Optional encrypted secrets (pass)
-
-### Security Limitations
-
-- Weak default passwords (development only)
-- Self-signed certificates
-- No RBAC configuration
-- Insecure registry mode
-- No network policies
-
-## Future Architecture Considerations
-
-### Potential Enhancements
-
-1. **Multi-cluster Support**: Manage multiple environments
-2. **Cloud Provider Support**: EKS, GKE, AKS variants
-3. **Production Mode**: Hardened configuration option
-4. **Plugin System**: Third-party component integrations
-5. **Observability**: Prometheus, Grafana pre-configured
-6. **Testing**: Automated smoke tests on install
-
-## Related Documentation
-
-- [README.md](../README.md) - User guide and getting started
-- [configuration.md](configuration.md) - Full configuration reference
-- [Pipelines as Code Docs](https://pipelinesascode.com/docs/) - PAC documentation
-- [Tekton Docs](https://tekton.dev/docs/) - Tekton documentation
+1. Create `lib/newcomponent/install.sh`.
+2. Add a menu entry in `build_component_menu()`.
+3. Add its flag in `parse_menu_selections()`.
+4. Call the installer from `all()`.
+5. Handle it in `load_preferences()` and `save_preferences()`.

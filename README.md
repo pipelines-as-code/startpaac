@@ -4,35 +4,23 @@ Set up [Pipelines-as-Code](https://pipelinesascode.com) on a local Kind cluster 
 
 [![ShellCheck](https://github.com/chmouel/startpaac/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/chmouel/startpaac/actions/workflows/shellcheck.yml)
 
-## Use with an agent
+startpaac is for local development only.
 
-Install the bundled [startpaac skill](skills/startpaac/SKILL.md) for Codex,
-Claude Code, or another skill-capable agent, then ask it to set up a PAC dev
-environment or redeploy a controller, watcher, or webhook change.
+## Prerequisites
 
-```sh
-./startpaac --install-skills agents  # ~/.agents/skills
-./startpaac --install-skills claude  # ~/.claude/skills
-./startpaac --install-skills all     # both
-```
+Required: docker, kind, helm, kubectl, jq, minica, and yq (or python3 with PyYAML).
 
-The skill follows the checkout, so updating startpaac updates the skill too.
+Optional:
 
-```sh
-./startpaac --doctor --output json
-./startpaac --up --plan --output json
-./startpaac --up --non-interactive --output json
-./startpaac --status --output json
-```
+- [ko](https://ko.build/): needed to build PAC from source (`-p`, `-a`, `-c`).
+- [gum](https://github.com/charmbracelet/gum): nicer interactive menus. Without it, startpaac falls back to plain Bash prompts.
+- [pass](https://www.passwordstore.org/): store the GitHub App credentials outside a plaintext file.
 
-`--up` reuses a compatible local Kind cluster and existing GitHub App credentials.
-See [agent installation and CLI interfaces](docs/agents.md).
+On macOS, install [coreutils](https://formulae.brew.sh/formula/coreutils) and [gnu-sed](https://formulae.brew.sh/formula/gnu-sed) from Homebrew.
 
 ## Quick start
 
-This is meant for local development only.
-
-Create a config file:
+Create the config file:
 
 ```shell
 mkdir -p $HOME/.config/startpaac
@@ -43,29 +31,20 @@ PAC_E2E_CONFIG=~/.local/share/startpaac/e2e-config.yaml
 EOF
 ```
 
-The GitHub App values do not go in that file. They go in a separate YAML file
-that `PAC_E2E_CONFIG` points to, either a path or a `pass:<entry>` reference.
-The first run creates an empty one for you. See the
-[PAC_E2E_CONFIG format](https://github.com/tektoncd/pipelines-as-code/tree/main/test#yaml-configuration-file)
-for the file itself.
+GitHub App credentials do not go in that file. They live in a separate YAML file
+(the [PAC E2E config](https://github.com/tektoncd/pipelines-as-code/tree/main/test#yaml-configuration-file))
+that `PAC_E2E_CONFIG` points to, as a path or a `pass:<entry>` reference.
 
-If startpaac runs interactively and finds no credentials, it creates a GitHub
-App for you. It asks whether the App belongs to your account or to an
-organization, generates a webhook relay URL on
-[hook.pipelinesascode.com](https://hook.pipelinesascode.com) (development only,
-no security guarantees), saves the credentials in the `PAC_E2E_CONFIG` file,
-then offers to start [gosmee](https://github.com/chmouel/gosmee) as a user
-service (systemd on Linux, LaunchAgent on macOS) so webhooks reach your local
-cluster.
+If an interactive run finds no credentials, startpaac offers to create a GitHub
+App: it asks whether the App belongs to you or an organization, gets a webhook
+relay URL from [hook.pipelinesascode.com](https://hook.pipelinesascode.com)
+(development only, no security guarantees), saves the credentials to the
+`PAC_E2E_CONFIG` file, and offers to run [gosmee](https://github.com/chmouel/gosmee)
+as a user service (systemd on Linux, LaunchAgent on macOS). Install the new App
+on the repositories you want to use. To run only this step, use
+`./startpaac --setup-github-app`.
 
-After creating the app, install it on the repositories you want to use with PAC.
-
-If you already have a GitHub App, reuse it. Put its values in that YAML file
-and the automatic setup will leave you alone:
-
-```shell
-${EDITOR:-vi} ~/.local/share/startpaac/e2e-config.yaml
-```
+To reuse an existing App, put its values in the YAML file instead:
 
 ```yaml
 common:
@@ -79,108 +58,113 @@ github:
   smee_url: "https://hook.pipelinesascode.com/..."
 ```
 
-Those names come from the Pipelines-as-Code E2E config. See
-[docs/configuration.md](docs/configuration.md#secrets-management) for all of
-them.
-
-Run the interactive installer:
+Then run the installer:
 
 ```shell
 ./startpaac
 ```
 
-You can also create a GitHub App directly without running the full installer:
-
-```shell
-./startpaac --setup-github-app
-```
-
 ## What gets installed
 
-**Core** (always):
-Kind cluster, Envoy Gateway, Docker registry, Tekton Pipelines
+Core: Kind cluster, Envoy Gateway, Docker registry, Tekton Pipelines.
 
-**Optional** (selected via menu):
-PAC (built from local source with ko), Tekton Dashboard, Tekton Triggers, Tekton Chains, Forgejo, PostgreSQL, Kueue (off by default), GitHub second controller
+Optional, chosen in the menu: PAC (built from local source with ko), Tekton
+Dashboard, Triggers and Chains, Forgejo, PostgreSQL, and a second GitHub
+controller. Kueue is off by default; select it in the menu or run
+`--install-kueue`.
 
-## Common usage
-
-```shell
-./startpaac              # interactive install (or uses saved preferences)
-./startpaac -a           # install everything non-interactively
-./startpaac -p           # redeploy PAC from source
-./startpaac -c controller  # redeploy a single component (controller/watcher/webhook)
-./startpaac --menu       # force the interactive menu
-./startpaac --stop-kind  # tear down the cluster
-```
-
-Configure PAC on an existing cluster (e.g. OpenShift):
+## Common commands
 
 ```shell
-./startpaac --configure-pac-target $KUBECONFIG $TARGET_NAMESPACE $SECRET_FOLDER
+./startpaac                  # interactive install, or saved preferences
+./startpaac -a               # recreate Kind and install everything non-interactively
+./startpaac -p               # rebuild and redeploy PAC from source
+./startpaac -c controller    # redeploy one component: controller, watcher, or webhook
+./startpaac --menu           # force the component menu
+./startpaac --stop-kind      # delete the cluster
+./startpaac --configure-pac-target $KUBECONFIG $TARGET_NAMESPACE $E2E_CONFIG_YAML
+                             # configure PAC on an existing cluster (e.g. OpenShift)
 ```
 
 ## Options
 
+Agent workflows:
+
 | Flag | Description |
 |------|-------------|
-| `-a, --all` | Install everything |
-| `-A, --all-but-kind` | Install everything but Kind |
-| `-i, --menu, --interactive` | Force interactive component selection |
-| `-R, --reset-preferences` | Reset saved component preferences |
-| `-k, --kind` | (Re)install Kind |
-| `-g, --install-forgejo` | Install Forgejo |
-| `-c, --deploy-component` | Deploy a component (controller, watcher, webhook) |
-| `-p, --install-paac` | Deploy and configure PAC |
-| `-s, --sync-kubeconfig` | Sync kubeconfig from remote host |
-| `-G, --start-user-gosmee` | Start gosmee locally |
-| `-S, --github-second-ctrl` | Deploy second GitHub controller |
-| `--setup-github-app` | Create a GitHub App (manifest flow) and store its credentials |
+| `--install-skills TARGET` | Link the bundled skill for `agents`, `claude`, or `all` |
+| `--up` | Create or reuse a local PAC development cluster |
+| `--describe` | Describe supported agent interfaces (needs jq) |
+| `--doctor` | Check local setup prerequisites |
+| `--status` | Inspect local component readiness |
+| `--plan` | Preview a core action without changing anything |
+| `--non-interactive` | Disable prompts and implicit service changes |
+| `--output text\|json` | Select output format (JSON needs jq) |
+
+Deployment actions:
+
+| Flag | Description |
+|------|-------------|
+| `-a, --all` | Recreate Kind and install selected components |
+| `-A, --all-but-kind` | Install without recreating Kind |
+| `-p, --install-paac` | Build, deploy, and configure PAC |
+| `-c, --deploy-component NAME` | Deploy `controller`, `watcher`, or `webhook` |
+| `-k, --kind` | Recreate Kind |
+| `--redeploy-kind` | Recreate Kind |
+| `--stop-kind` | Delete Kind and its kubeconfig |
 | `--install-gateway` | Install Envoy Gateway |
-| `--install-dashboard` | Install Tekton Dashboard |
-| `--install-tekton` | Install Tekton |
+| `--install-registry` | Install the registry |
+| `-t, --install-tekton` | Install Tekton Pipelines |
 | `--install-triggers` | Install Tekton Triggers |
 | `--install-chains` | Install Tekton Chains |
-| `--install-kueue` | Install Kueue and queue PipelineRuns one at a time |
-| `--redeploy-kind` | Redeploy Kind |
-| `--scale-down` | Scale down a component |
-| `--stop-kind` | Stop Kind |
-| `--debug-image` | Use debug image for PAC controller |
-| `--show-config` | Show PAC configuration |
+| `--install-dashboard` | Install Tekton Dashboard |
+| `-g, --install-forgejo` | Install Forgejo and sample repositories |
+| `--setup-forgejo-sample` | Create sample Forgejo repositories |
+| `--install-postgresql` | Install PostgreSQL |
+| `--install-kueue` | Install Kueue to queue PipelineRuns one at a time |
+| `--all-to-tekton` | Recreate Kind and install through Tekton |
+| `-F, --all-but-forge` | Install without Kind or Forgejo |
+| `-H, --all-github-second-no-forgejo` | Recreate with a second GitHub controller |
+| `-S, --github-second-ctrl` | Deploy the second GitHub controller |
+| `--configure-pac` | Configure PAC |
+| `--configure-pac-target KUBECONFIG NAMESPACE E2E_CONFIG` | Configure PAC on an existing cluster |
+| `--debug-image` | Deploy PAC with the debug image |
+| `-s, --sync-kubeconfig` | Sync kubeconfig from the remote target |
+| `-G, --start-user-gosmee` | Start the user webhook forwarder |
+| `--setup-github-app` | Create a GitHub App interactively |
+| `--show-config` | Show configuration |
+
+Other options:
+
+| Flag | Description |
+|------|-------------|
+| `--e2e-config FILE` | Read PAC secrets and settings from an E2E YAML config |
+| `--e2e-config-override FILE` | Overlay a YAML config on `PAC_E2E_CONFIG` (file or `pass:<entry>`) |
+| `-O, --scale-down NAME` | Scale down a component after deployment |
+| `-i, --menu, --interactive` | Force the component menu |
+| `-R, --reset-preferences` | Remove saved component preferences |
+| `--ci` | Legacy non-interactive installation mode |
 | `-h, --help` | Show help |
 
 ## Configuration
 
-Minimal config in `~/.config/startpaac/config`:
+startpaac reads `~/.config/startpaac/config` and takes GitHub App values from
+the E2E YAML file, or from `--e2e-config`. To swap a few values only, use
+`--e2e-config-override`. See [docs/configuration.md](docs/configuration.md)
+for every variable, remote VM setup, hooks, and more.
 
-```shell
-TARGET_HOST=local
-PAC_DIR=~/path/to/pipelines-as-code
-PAC_E2E_CONFIG=~/.local/share/startpaac/e2e-config.yaml
+## Working with an agent
+
+Put the executable on your PATH, then link the bundled skill for your agent:
+
+```sh
+startpaac --install-skills all   # agents, claude, or all
+startpaac --up --plan --output json
 ```
 
-`PAC_SECRET_FOLDER` no longer exists. startpaac reads the GitHub App values from
-the YAML file in `PAC_E2E_CONFIG`, or from whatever you pass to `--e2e-config`.
-If you only want to swap a few of them, use `--e2e-config-override`.
+See [docs/agents.md](docs/agents.md) for installation and the JSON interface.
 
-See [docs/configuration.md](docs/configuration.md) for the full reference (remote VM setup, secrets management, hooks, PostgreSQL, preferences).
-
-## Prerequisites
-
-docker, kind, helm, kubectl, jq, minica, yq (or python3 with PyYAML)
-
-Optional:
-
-- [ko](https://ko.build/) - only needed when deploying PAC from source (`-p`, `-a`, `-c` flags)
-- [gum](https://github.com/charmbracelet/gum) - enhances interactive menus (falls back to plain bash prompts)
-- [pass](https://www.passwordstore.org/) - for secrets management
-
-macOS users: install [coreutils](https://formulae.brew.sh/formula/coreutils) and [gnu-sed](https://formulae.brew.sh/formula/gnu-sed) from Homebrew.
-
-## More
-
-- [Configuration reference](docs/configuration.md)
-- [Architecture](docs/architecture.md)
-- [ZSH completion](misc/_startpaac)
+How the pieces fit together is in [docs/architecture.md](docs/architecture.md);
+zsh completion ships as [misc/_startpaac](misc/_startpaac).
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
